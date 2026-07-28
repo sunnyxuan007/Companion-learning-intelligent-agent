@@ -1,5 +1,9 @@
 "use client";
 
+// 伴学智能体 — Modified from DeepTutor original.
+// Changes: Added 志愿填报 (GraduationCap) and 学习分析 (FlaskConical) nav entries.
+// Date: 2026-07-21
+
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -11,7 +15,9 @@ import {
   Bot,
   Brain,
   ChevronDown,
+  FlaskConical,
   Github,
+  GraduationCap,
   HeartHandshake,
   House,
   LayoutGrid,
@@ -84,6 +90,18 @@ const PRIMARY_NAV: NavEntry[] = [
     label: "Learning Space",
     icon: LayoutGrid,
     tooltipKey: "Space tooltip",
+  },
+  {
+    href: "/volunteer",
+    label: "志愿填报",
+    icon: GraduationCap,
+    requires: "llm",
+  },
+  {
+    href: "/study-lab",
+    label: "学习分析",
+    icon: FlaskConical,
+    requires: "llm",
   },
 ];
 
@@ -198,7 +216,7 @@ export function SidebarShell({
           >
             <Image
               src="/logo.png"
-              alt="DeepTutor"
+              alt="伴学tutor"
               width={22}
               height={22}
               className="h-[22px] w-[22px] rounded-md"
@@ -327,14 +345,14 @@ export function SidebarShell({
         <Link href="/" className="group flex items-center gap-1.5">
           <Image
             src="/logo.png"
-            alt="DeepTutor"
+            alt="伴学tutor"
             width={22}
             height={22}
             className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
           />
           <Image
             src="/banner.png"
-            alt="DeepTutor"
+            alt="伴学tutor"
             width={897}
             height={236}
             priority

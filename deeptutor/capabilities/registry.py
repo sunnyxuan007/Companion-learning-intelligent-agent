@@ -1,13 +1,20 @@
-"""Built-in loop-capability registry."""
+"""Built-in loop-capability registry.
+
+伴学智能体 — Modified from DeepTutor original.
+Changes: Added VolunteerLoopCapability and CareerLoopCapability registration.
+Date: 2026-07-21
+"""
 
 from __future__ import annotations
 
+from deeptutor.capabilities.career import CareerLoopCapability
 from deeptutor.capabilities.explore_context import ExploreContextCapability
 from deeptutor.capabilities.mastery import MasteryLoopCapability
 from deeptutor.capabilities.obsidian import ObsidianCapability
 from deeptutor.capabilities.protocol import LoopCapability
 from deeptutor.capabilities.solve import SolveLoopCapability
 from deeptutor.capabilities.subagent import SubagentCapability
+from deeptutor.capabilities.volunteer import VolunteerLoopCapability
 from deeptutor.core.context import UnifiedContext
 
 LOOP_CAPABILITIES: tuple[LoopCapability, ...] = (
@@ -16,6 +23,8 @@ LOOP_CAPABILITIES: tuple[LoopCapability, ...] = (
     ObsidianCapability(),
     SubagentCapability(),
     ExploreContextCapability(),
+    VolunteerLoopCapability(),
+    CareerLoopCapability(),
 )
 
 

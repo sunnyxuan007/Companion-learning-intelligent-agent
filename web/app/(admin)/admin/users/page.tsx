@@ -452,7 +452,7 @@ export default function AdminUsersPage() {
         </div>
 
         <p className="mt-8 text-center text-xs text-[var(--muted-foreground)]">
-          DeepTutor Admin · User Management
+          伴学tutor 管理 · 用户管理
         </p>
       </div>
 

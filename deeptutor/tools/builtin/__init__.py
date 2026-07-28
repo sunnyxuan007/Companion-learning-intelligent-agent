@@ -1,4 +1,9 @@
-"""Built-in tool implementations and metadata."""
+"""Built-in tool implementations and metadata.
+
+伴学智能体 — Modified from DeepTutor original.
+Changes: Added import and registration of CUSTOM_TOOL_TYPES for custom tools.
+Date: 2026-07-21
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ from deeptutor.capabilities.obsidian import OBSIDIAN_TOOL_TYPES
 from deeptutor.capabilities.solve import SOLVE_TOOL_TYPES
 from deeptutor.capabilities.subagent import SUBAGENT_TOOL_TYPES
 from deeptutor.core.tool_protocol import BaseTool, ToolDefinition, ToolParameter, ToolResult
+from deeptutor.tools.custom import CUSTOM_TOOL_TYPES
 from deeptutor.tools.exec_tool import ExecTool
 from deeptutor.tools.media_gen_tool import ImagegenTool, VideogenTool
 from deeptutor.tools.partner_memory import (
@@ -1484,6 +1490,9 @@ BUILTIN_TOOL_TYPES: tuple[type[BaseTool], ...] = (
     PartnerReadTool,
     PartnerMemorizeTool,
     PartnerSearchTool,
+    # Custom tools (volunteer/career/study). Context-gated: auto-mounted when
+    # the volunteer or career loop capability is active.
+    *CUSTOM_TOOL_TYPES,
 )
 
 # No tools are parked right now. When a tool's implementation is being

@@ -217,7 +217,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="DeepTutor API",
+    title="伴学tutor API",
     version="1.0.0",
     lifespan=lifespan,
     # Disable automatic trailing slash redirects to prevent protocol downgrade issues
@@ -312,6 +312,7 @@ from deeptutor.api.routers import (
     capabilities_settings,
     chat,
     co_writer,
+    cron_router,
     dashboard,
     imports,
     knowledge,
@@ -332,6 +333,9 @@ from deeptutor.api.routers import (
     system,
     unified_ws,
     voice,
+    volunteer,
+    volunteer_chat,
+    volunteer_table,
 )
 from deeptutor.api.routers import (
     tools as tools_router,
@@ -417,6 +421,7 @@ app.include_router(
 app.include_router(tools_router.router, prefix="/api/v1/tools", tags=["tools"], dependencies=_auth)
 app.include_router(system.router, prefix="/api/v1/system", tags=["system"], dependencies=_auth)
 app.include_router(voice.router, prefix="/api/v1/voice", tags=["voice"], dependencies=_auth)
+app.include_router(cron_router.router, prefix="/api/v1/cron", tags=["cron"], dependencies=_auth)
 app.include_router(
     plugins_api.router, prefix="/api/v1/plugins", tags=["plugins"], dependencies=_auth
 )
@@ -433,6 +438,25 @@ app.include_router(
     dependencies=_auth,
 )
 
+app.include_router(
+    volunteer.router,
+    prefix="/api/v1",
+    tags=["volunteer"],
+    dependencies=_auth,
+)
+app.include_router(
+    volunteer_table.router,
+    prefix="/api/v1",
+    tags=["volunteer-table"],
+    dependencies=_auth,
+)
+app.include_router(
+    volunteer_chat.router,
+    prefix="/api/v1",
+    tags=["volunteer-chat"],
+    dependencies=_auth,
+)
+
 # Unified WebSocket endpoint — auth is checked inside the handler (WebSockets
 # cannot use FastAPI dependencies in the standard way)
 app.include_router(unified_ws.router, prefix="/api/v1", tags=["unified-ws"])
@@ -444,7 +468,7 @@ app.include_router(quiz_judge.router, prefix="/api/v1", tags=["quiz-judge"])
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to DeepTutor API"}
+    return {"message": "欢迎使用伴学tutor API"}
 
 
 if __name__ == "__main__":

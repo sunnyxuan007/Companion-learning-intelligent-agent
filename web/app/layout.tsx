@@ -21,8 +21,8 @@ const fontSerif = Lora({
 });
 
 export const metadata: Metadata = {
-  title: "DeepTutor",
-  description: "Agent-native intelligent learning companion",
+  title: "伴学tutor",
+  description: "AI 智能学习伙伴 — Agent-native intelligent learning companion",
   icons: {
     icon: [
       { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
