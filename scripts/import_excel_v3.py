@@ -116,15 +116,17 @@ def main():
             col_type_str = str(col_type or "").strip()
 
             level_map = ""
-            cl = str(col_level or "")
+            # 院校层次来源是 col_tags（如 "985/211/双一流/国重点/保研资格"），
+            # 而非 col_level（该列是"卓越工程师/部委直属"等特殊标签）。
+            cl = str(col_tags or "")
+            tags: list[str] = []
             if "985" in cl:
-                level_map = "985"
-            elif "211" in cl:
-                level_map = "211"
-            elif "双一流" in cl:
-                level_map = "双一流"
-            elif cl:
-                level_map = "普通"
+                tags.append("985")
+            if "211" in cl:
+                tags.append("211")
+            if "双一流" in cl:
+                tags.append("双一流")
+            level_map = "+".join(tags) if tags else ("普通" if cl else "")
 
             is_pub = 0 if "民办" in str(col_public or "") else 1
 
