@@ -299,6 +299,24 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE colleges ADD COLUMN {col} {coltype}")
         except Exception:
             pass
+    # Migration: official national college code (Phase 17 编码归一)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(colleges)").fetchall()]
+        if "official_code" not in cols:
+            conn.execute("ALTER TABLE colleges ADD COLUMN official_code TEXT DEFAULT ''")
+    except Exception:
+        pass
+    # Migration: college code map (province code <-> national official code)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS college_code_map (
+            official_code TEXT NOT NULL,
+            province_code TEXT,
+            province TEXT,
+            school_name TEXT,
+            source TEXT DEFAULT '',
+            PRIMARY KEY (official_code, province_code)
+        );
+    """)
     conn.commit()
     conn.close()
     from deeptutor.services.custom.medical_dao import seed_default_restrictions

@@ -1126,6 +1126,97 @@ L3 memory (profile.md / preferences.md)
 | C1 | `page.tsx` | `savePlan` 回调（PUT plan/{id} slots）+ "保存"按钮（蓝色Save图标） | ✅ |
 | C2 | `page.tsx` | `loadSavedPlans` + `loadPlan` + `deleteSavedPlan` 回调；可折叠"历史方案"面板（关闭/加载/删除） | ✅ |
 
+### Phase 17 🚀 编码归一：全面官方码化（B 方案，2026-08-08 记录，实施中）
+
+> 状态：数据调查**已完成**，方向确认 **B（全面官方码化）**，实施中。
+> 用户决策：① 同名 CU 删除 ② 变体挂"主校码+后缀" ③ 多省扩展 → 主键全面改官方码 ④ admission_ranks 本次一并官方码化
+> **2026-08-12 更新：迁移已执行并验证通过 🎉。** 「实施中」→「已完成」。见下「迁移结果」。
+
+#### 背景：3 套编码 → 1 套主键 + 映射
+
+| 编码 | 样子 | 示例 | 现状用途 | 处置 |
+|------|------|------|---------|------|
+| 地方码 | 5 位 | `10558` 中山 | `admission_ranks.college_id` / `colleges.id` | 降级为省别名存映射表 |
+| **官方码** | 10 位 | `4144010558` | 教育部全国名单 | **统一为主键** |
+| 合成码 | `CU000xx` | `CU01903` 中山 | 全国补充库 | **清零** |
+
+**核心关系**：官方码 10 位后 5 位 = 广东地方码（`4144010574` 华师大 → `10574`）。
+
+#### 数据事实（已核实）
+
+- `colleges`：numeric（广东地方码）**1819** / CU（合成码）**2769**
+- numeric 1766/1819 按名匹配官方码（53 变体：北大医学部/哈工深/军校等）
+- CU 2499/2769 精确匹配官方码；270 不匹配
+
+**CU 2769 分解**：
+
+| 类别 | 数量 | 处置 |
+|------|------|------|
+| 同名 numeric（重复） | 1581 | 删除 |
+| 独有、有官方码 | 925 | CU→官方码 |
+| 无官方码（军校/分校区/医学院） | 263 | 主校码+后缀 |
+
+**残留 CU 引用面（改/删需迁移）**：
+- `college_majors.college_id` CU → 31278 行（同名 18065 / 独有 13213）
+- `volunteer_plans.slots`（JSON）CU → 175 槽 / 20 校（用户已生成方案，**必须迁移**）
+- `admission_ranks.college_id` CU → 9 行；**非广东省份测试数据（北京/浙江/湖北/四川/福建）全用 CU 码**
+- `admission_ranks_old`（全 CU 1672 行）→ 删除
+
+**变体全库精确集合 = 15 所**（官方名单无码，挂主校码+后缀）：
+北大医学部/复旦医学院/上交医学院/浙大医学院/东北大学秦皇岛/人大苏州校区/中石油克拉玛依/北交威海/北师大珠海/**华师大汕尾**/合工大宣城/大工盘锦/山大威海/电子科大沙河/西南大学荣昌 等（省市校区类通用 `主校官方码-XX` 规则）
+
+**多省扩展机制**（重点）：任何省数据导入时先查 `college_code_map`（`official_code, province, province_code`）转官方码再入库。广东用规则自动生成映射；其他省按名称匹配；与教育部码无关的省份同样"加一行映射"即可。
+
+#### 实施步骤
+
+0. 备份：`cp deeptutor_custom.db deeptutor_custom.db.bak_before_code`
+1. `ALTER TABLE colleges ADD COLUMN official_code TEXT`（幂等）
+2. 建 `college_code_map` 表：`(official_code, province_code, province, school_name, source, PRIMARY KEY(official_code, province_code))`
+3. 写 `scripts/migrate_college_codes.py`（含 `--dry-run`）：官方名单→name→官方码；遍历 CU+numeric 分类 `mapped`/`dupe_delete`/`variant`
+4. **dry-run 审计报告** → 用户核对 → 真跑
+5. 数据迁移：numeric 回填 official_code；同名 CU 1581 删除（先迁引用）；独有 CU 925 id=官方码；变体 263 主校码+后缀；`admission_ranks`/`college_majors` 地方码→官方码；`volunteer_plans.slots` 重写 college_id；删 `admission_ranks_old`
+6. 代码适配：**无需额外过滤** —— 迁移后 `colleges.id` 即官方码，`search_colleges(college_ids=...)` 走 `c.id IN(...)` 已等官方码过滤；`official_code` 列与 id 冗余，仅作溯源存档
+7. 回归验证：`generate_group_recommendations(广东,物理)` 改码前后对比 = 零回归；`pytest`；复跑 `ai_tune_plan`
+
+#### 迁移结果（2026-08-12 已执行 ✅）
+
+**分类落地**：
+
+| 类别 | 计划 | 实际 |
+|------|------|------|
+| numeric → 官方码 | 1766 | 1795＋2（括号全/半角漏网补齐） |
+| numeric 变体（主校码+后缀） | 24 | 24＋1（`19414 中石油克拉玛依` 并入 `4111011414-KLM`） |
+| CU 同名删除 | 1581 | 1581 |
+| CU → 官方码 | 925 | 925 |
+| CU 变体 | 8 | 8 |
+| CU 冲突保留 | 255 | 255（军校/军医/公安类，官方无码） |
+
+- **执行脚本**：`scripts/migrate_college_codes.py`（FK OFF → 改名 → 引用 remap → map 填充 → FK ON）
+- **补迁脚本**：`scripts/backfill_missing_official_codes.py`（括号归一化漏网 8 行；两次运行已清零）
+- **引用迁移**：`admission_ranks`/`college_majors` 用 `INSERT OR REPLACE … SELECT(换college_id)` + `DELETE`（同校对同一官方码时 PK 合并，唯一一次合并是北大 `EN001` 同名重复行，非数据丢失）；`volunteer_plans.slots` JSON、`doc_meta_v2.metadata` 均重写
+- **净行数**：`admission_ranks` 83635（不变）、`college_majors` 68350→68349（合并去重 1）、`colleges` 4588→3000
+- **完整性**：孤儿引用 0、FK check 0、`admission_ranks_old` 已删
+- **关键坑**：官方名单用全角括号（`中国石油大学（华东）`）而库里是半角 —— `_lookup_official` 做括号归一化匹配，否则 8 所院校漏网
+- **回归**：`generate_group_recommendations(广东,物理)` 0.9s，三档 33/33/33，样例与迁移前一致；`pytest tests/services/custom tests/tools/custom tests/capabilities` = **191 passed**
+- **备份**：`data/user/custom/deeptutor_custom.db.bak_before_code_20260811_235309` + 补迁前备份存在，可回滚
+
+#### 关键风险
+
+- `volunteer_plans` 175 槽必须备份迁移，失败可回滚
+- 非广东测试数据（CU 码）必须一并迁移，否则 join 孤儿
+- 全程 dry-run → 审计 → 实跑；每步可逆
+
+#### 相关文件
+
+| 文件 | 说明 |
+|------|------|
+| `deeptutor/services/custom/db.py` | 加列 + 建映射表 |
+| `scripts/migrate_college_codes.py` | 迁移脚本（新建，含 dry-run；2026-08-12 完善 FK OFF / 引用 remap / FK check） |
+| `scripts/backfill_missing_official_codes.py` | 括号归一化漏网补迁脚本（新建） |
+| `deeptutor/services/custom/volunteer_scorer.py` | 验证用（零改动，回归通过） |
+| `deeptutor/services/custom/college_dao.py` | 验证用（id 即官方码，search 无需改动） |
+| `全国高等院校名单2026.xls` / `广东2026高考志愿大数据专家版0626.xlsx` | 数据源 |
+
 
 ## 使用方式
 
