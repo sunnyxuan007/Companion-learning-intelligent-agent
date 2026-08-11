@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from deeptutor.services.custom.db import get_connection
@@ -101,22 +102,22 @@ def get_major_recommendations(top3: str) -> list[dict[str, str]]:
 def save_assessment(user_id: str, scores: dict[str, int]) -> dict[str, Any]:
     result = calculate_riasec(scores)
     conn = get_connection()
-    existing = conn.execute(
-        "SELECT value FROM user_settings WHERE user_id = ? AND key = 'holland_assessment'",
+    row = conn.execute(
+        "SELECT settings_json FROM user_settings WHERE user_id = ?",
         (user_id,),
     ).fetchone()
+    settings = json.loads(row["settings_json"]) if row else {}
+    settings["holland_assessment"] = {"scores": scores, "result": result}
 
-    payload = json.dumps({"scores": scores, "result": result}, ensure_ascii=False)
-    if existing:
-        conn.execute(
-            "UPDATE user_settings SET value = ? WHERE user_id = ? AND key = 'holland_assessment'",
-            (payload, user_id),
-        )
-    else:
-        conn.execute(
-            "INSERT INTO user_settings (user_id, key, value) VALUES (?, 'holland_assessment', ?)",
-            (user_id, payload),
-        )
+    now = time.time()
+    conn.execute(
+        """INSERT INTO user_settings (user_id, settings_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+               settings_json = excluded.settings_json,
+               updated_at = excluded.updated_at""",
+        (user_id, json.dumps(settings, ensure_ascii=False), now, now),
+    )
     conn.commit()
     conn.close()
     return result
@@ -125,10 +126,11 @@ def save_assessment(user_id: str, scores: dict[str, int]) -> dict[str, Any]:
 def get_assessment(user_id: str) -> dict[str, Any] | None:
     conn = get_connection()
     row = conn.execute(
-        "SELECT value FROM user_settings WHERE user_id = ? AND key = 'holland_assessment'",
+        "SELECT settings_json FROM user_settings WHERE user_id = ?",
         (user_id,),
     ).fetchone()
     conn.close()
     if not row:
         return None
-    return json.loads(row["value"])
+    settings = json.loads(row["settings_json"])
+    return settings.get("holland_assessment")

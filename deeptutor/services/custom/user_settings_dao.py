@@ -28,15 +28,20 @@ def get_user_weights(user_id: str) -> dict[str, float]:
 
 def set_user_weights(user_id: str, weights: dict[str, float]) -> None:
     now = time.time()
-    settings_json = json.dumps({"volunteer_weights": weights}, ensure_ascii=False)
     conn = get_connection()
+    row = conn.execute(
+        "SELECT settings_json FROM user_settings WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    settings = json.loads(row["settings_json"]) if row else {}
+    settings["volunteer_weights"] = weights
     conn.execute(
         """INSERT INTO user_settings (user_id, settings_json, created_at, updated_at)
            VALUES (?, ?, ?, ?)
            ON CONFLICT(user_id) DO UPDATE SET
                settings_json = excluded.settings_json,
                updated_at = excluded.updated_at""",
-        (user_id, settings_json, now, now),
+        (user_id, json.dumps(settings, ensure_ascii=False), now, now),
     )
     conn.commit()
     conn.close()

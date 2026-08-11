@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Search, BarChart3, GraduationCap, Building2, MessageSquare,
   TrendingUp, Sliders, RotateCcw, Save, Zap, Download,
-  ListOrdered, Shield, Trash2, Plus, GripVertical, ChevronDown, ChevronUp,
+  ListOrdered, Shield, Trash2, Plus, GripVertical, ChevronDown, ChevronUp, Sparkles, Compass,
 } from "lucide-react";
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Filler,
@@ -130,6 +130,19 @@ export default function VolunteerPage() {
   const [planMsg, setPlanMsg] = useState("");
   const [diagnosis, setDiagnosis] = useState<Record<string, unknown> | null>(null);
   const [showDiagnosis, setShowDiagnosis] = useState(false);
+  const [aiTuning, setAiTuning] = useState(false);
+  const [aiAdvice, setAiAdvice] = useState<{ summary?: string; advice?: { order?: number; college_name?: string; action?: string; suggest_college?: string | null; reason?: string }[] } | null>(null);
+  const [showAiAdvice, setShowAiAdvice] = useState(false);
+  const [hollandOpen, setHollandOpen] = useState(false);
+  const [hollandQuestions, setHollandQuestions] = useState<{code: string; text: string}[]>([]);
+  const [hollandDisclaimer, setHollandDisclaimer] = useState("");
+  const [hollandAnswers, setHollandAnswers] = useState<Record<number, number>>({});
+  const [hollandResult, setHollandResult] = useState<{
+    result?: { top3?: string; top3_labels?: string[]; scores?: Record<string, number> } | null;
+    major_recommendations?: { major: string; match_count: number; riasec_codes: string }[];
+  } | null>(null);
+  const [hollandLoading, setHollandLoading] = useState(false);
+  const [hollandMsg, setHollandMsg] = useState("");
   const [savedPlans, setSavedPlans] = useState<{id:string;created_at:number;province:string;status:string}[]>([]);
   const [showSavedPlans, setShowSavedPlans] = useState(false);
   const [allCategories, setAllCategories] = useState<string[]>([]);
@@ -587,6 +600,82 @@ export default function VolunteerPage() {
       setPlanMsg(e instanceof Error ? e.message : "请求失败");
     }
   }, [plan]);
+
+  const aiTunePlan = useCallback(async () => {
+    if (!plan) return;
+    setPlanMsg("");
+    setAiTuning(true);
+    try {
+      const res = await fetch(`/api/v1/volunteer/plan/${plan.id}/ai-tune`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.detail || "AI 优化建议失败");
+      }
+      const data = await res.json();
+      setAiAdvice(data);
+      setShowAiAdvice(true);
+      setPlanMsg(data.message || "AI 优化建议已生成");
+    } catch (e) {
+      setPlanMsg(e instanceof Error ? e.message : "请求失败");
+    } finally {
+      setAiTuning(false);
+    }
+  }, [plan]);
+
+  const loadHolland = useCallback(async () => {
+    setHollandLoading(true);
+    setHollandMsg("");
+    try {
+      const [qRes, rRes] = await Promise.all([
+        fetch("/api/v1/volunteer/holland/questions"),
+        fetch(`/api/v1/volunteer/holland/result/${USER_ID}`),
+      ]);
+      const qData = await qRes.json();
+      setHollandQuestions(qData.questions || []);
+      setHollandDisclaimer(qData.disclaimer || "");
+      const rData = await rRes.json();
+      if (rData.result) {
+        setHollandResult(rData);
+      }
+    } catch {
+      setHollandMsg("测评加载失败");
+    } finally {
+      setHollandLoading(false);
+    }
+  }, []);
+
+  const submitHolland = useCallback(async () => {
+    const total = Object.values(hollandAnswers);
+    if (total.length < hollandQuestions.length) {
+      setHollandMsg("请完成所有题目后再提交");
+      return;
+    }
+    setHollandLoading(true);
+    setHollandMsg("");
+    const scores: Record<string, number> = {};
+    for (let i = 0; i < hollandQuestions.length; i++) {
+      const code = hollandQuestions[i].code;
+      scores[code] = (scores[code] || 0) + hollandAnswers[i];
+    }
+    try {
+      const res = await fetch("/api/v1/volunteer/holland/assess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: USER_ID, scores }),
+      });
+      if (!res.ok) throw new Error("提交失败");
+      setHollandResult(await res.json());
+    } catch (e) {
+      setHollandMsg(e instanceof Error ? e.message : "请求失败");
+    } finally {
+      setHollandLoading(false);
+    }
+  }, [hollandAnswers, hollandQuestions]);
+
+  const resetHolland = useCallback(() => {
+    setHollandAnswers({});
+    setHollandResult(null);
+  }, []);
 
   const deleteSlot = useCallback(async (idx: number) => {
     if (!plan) return;
@@ -1140,6 +1229,9 @@ export default function VolunteerPage() {
           </div>
           {planMsg && <p className="mt-2 text-center text-sm text-blue-600">{planMsg}</p>}
           <div className="mt-4 flex flex-wrap justify-center gap-3">
+            <button onClick={aiTunePlan} disabled={aiTuning} className="flex items-center gap-1.5 rounded-lg border bg-gradient-to-r from-violet-500 to-purple-500 px-4 py-2 text-sm font-medium text-white hover:from-violet-600 hover:to-purple-600 disabled:opacity-60">
+              <Sparkles className="h-4 w-4" /> {aiTuning ? "AI 分析中…" : "AI 优化建议"}
+            </button>
             <button onClick={savePlan} className="flex items-center gap-1.5 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50">
               <Save className="h-4 w-4" /> 保存
             </button>
@@ -1183,6 +1275,40 @@ export default function VolunteerPage() {
               </div>
             </div>
           )}
+
+          {/* AI 优化建议 */}
+          {showAiAdvice && aiAdvice && (
+            <div className="mt-4 rounded-lg border border-violet-200 bg-violet-50/50 p-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-1.5 font-semibold text-violet-800">
+                  <Sparkles className="h-4 w-4" /> AI 优化建议
+                </h3>
+                <button onClick={() => setShowAiAdvice(false)} className="text-sm text-gray-400 hover:text-gray-600">关闭</button>
+              </div>
+              {aiAdvice.summary && (
+                <p className="mt-3 rounded-md border border-violet-200 bg-white p-3 text-sm leading-relaxed text-gray-700">{aiAdvice.summary}</p>
+              )}
+              <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
+                {(aiAdvice.advice || []).map((a, i) => (
+                  <div key={i} className="flex items-start gap-3 rounded-md border bg-white p-3 text-sm">
+                    <span className={`mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${a.action === "swap" ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
+                      {a.action === "swap" ? "建议替换" : "保留"}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-gray-800">
+                        #{a.order} {a.college_name}
+                      </p>
+                      {a.suggest_college && (
+                        <p className="mt-0.5 text-xs text-amber-600">→ {a.suggest_college}</p>
+                      )}
+                      {a.reason && <p className="mt-1 text-xs leading-relaxed text-gray-500">{a.reason}</p>}
+                    </div>
+                  </div>
+                ))}
+                {(aiAdvice.advice || []).length === 0 && <p className="text-sm text-gray-400">暂无逐条建议</p>}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1212,6 +1338,114 @@ export default function VolunteerPage() {
 
       <div className="mt-8">
         <AdmissionCountdown province={province} />
+      </div>
+
+      {/* 霍兰德职业兴趣测评 */}
+      <div className="mt-8 rounded-lg border bg-white p-6 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <Compass className="h-5 w-5 text-indigo-500" />
+            职业兴趣测评
+            <span className="text-xs font-normal text-gray-400">霍兰德 RIASEC · 12 题</span>
+          </h2>
+          <button onClick={() => setHollandOpen(v => !v)} className="flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">
+            {hollandOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            {hollandOpen ? "收起" : "开始测评"}
+          </button>
+        </div>
+
+        {hollandOpen && (
+          <div className="mt-4">
+            {hollandLoading && hollandQuestions.length === 0 ? (
+              <p className="text-sm text-gray-400">加载题目中…</p>
+            ) : hollandResult?.result ? (
+              <div>
+                <div className="flex items-start justify-between">
+                  <div className="flex flex-wrap gap-2">
+                    {(hollandResult.result.top3_labels || []).map((label, i) => (
+                      <span key={i} className="rounded-full bg-indigo-100 px-3 py-1 text-sm font-medium text-indigo-700">{label}</span>
+                    ))}
+                  </div>
+                  <button onClick={resetHolland} className="shrink-0 rounded-md border px-2.5 py-1 text-xs text-gray-500 hover:bg-gray-50">重新测评</button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-3">
+                  {Object.entries(hollandResult.result.scores || {}).map(([code, val]) => (
+                    <div key={code} className="rounded border bg-gray-50 p-2">
+                      <div className="flex items-center justify-between text-xs text-gray-500">
+                        <span className="font-medium">{code}</span>
+                        <span>{val as number} 分</span>
+                      </div>
+                      <div className="mt-1 h-2 rounded-full bg-gray-200">
+                        <div className="h-2 rounded-full bg-indigo-500" style={{ width: `${Math.min(100, ((val as number) / 10) * 100)}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {hollandResult.major_recommendations && hollandResult.major_recommendations.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-sm font-medium text-gray-700">推荐专业</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {hollandResult.major_recommendations.slice(0, 10).map((m) => (
+                        <span key={m.major} className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1 text-sm text-indigo-700">{m.major}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <p className="mt-4 text-xs text-gray-400">{hollandDisclaimer || "提示：测评结果仅供参考，不构成填报依据。"}</p>
+              </div>
+            ) : (
+              <div>
+                {hollandQuestions.length === 0 && !hollandLoading && (
+                  <button
+                    onClick={loadHolland}
+                    className="rounded-md bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700"
+                  >
+                    加载题目
+                  </button>
+                )}
+
+                {hollandQuestions.map((q, qi) => (
+                  <div key={qi} className="rounded-md border p-3">
+                    <p className="text-sm font-medium text-gray-800">
+                      {qi + 1}. {q.text}
+                      <span className="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-600">{q.code}</span>
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {[
+                        { v: 1, label: "非常不符合" },
+                        { v: 2, label: "不太符合" },
+                        { v: 3, label: "一般" },
+                        { v: 4, label: "比较符合" },
+                        { v: 5, label: "非常符合" },
+                      ].map((o) => (
+                        <button
+                          key={o.v}
+                          onClick={() => setHollandAnswers(prev => ({ ...prev, [qi]: o.v }))}
+                          className={`rounded-md px-3 py-1 text-xs ${hollandAnswers[qi] === o.v ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+
+                <button
+                  onClick={submitHolland}
+                  disabled={hollandLoading}
+                  className="mt-4 rounded-md bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {hollandLoading ? "提交中…" : "提交测评"}
+                </button>
+                {hollandMsg && <p className="mt-2 text-sm text-red-500">{hollandMsg}</p>}
+                {hollandDisclaimer && <p className="mt-3 text-xs text-gray-400">{hollandDisclaimer}</p>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="mt-8 rounded-lg border bg-white p-6 shadow-sm">

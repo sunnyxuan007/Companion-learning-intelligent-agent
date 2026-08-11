@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -245,10 +246,18 @@ async def reorder_plan(plan_id: str):
 
 @router.post("/volunteer/plan/{plan_id}/ai-tune")
 async def ai_tune_plan(plan_id: str):
-    from deeptutor.services.custom.volunteer_table_dao import get_plan, update_plan
+    """AI 优化建议：对当前志愿表逐条点评 + 给替换/重排意见。
+
+    只返回建议文本，**不修改、不生成**志愿表。建议基于真实专业组候选池，
+    LLM 只在一片真实数据上做分析。
+    """
     from deeptutor.services.custom.college_dao import search_colleges
-    from deeptutor.services.custom.volunteer_scorer import generate_recommendations
+    from deeptutor.services.custom.db import get_connection as db_conn
+    from deeptutor.services.custom.volunteer_scorer import generate_group_recommendations
+    from deeptutor.services.custom.volunteer_table_dao import get_plan
+    from deeptutor.services.custom.user_settings_dao import get_user_weights
     from deeptutor.services.llm import complete
+    from deeptutor.api.routers.volunteer import _resolve_strategies
 
     plan = get_plan(plan_id)
     if not plan:
@@ -258,9 +267,7 @@ async def ai_tune_plan(plan_id: str):
     if not slots:
         raise HTTPException(status_code=400, detail="志愿表为空")
 
-    # Get eligible colleges
-    from deeptutor.services.custom.db import get_connection as db_conn
-
+    # 1. 从真实录取数据取本科目候选（与 create_plan 同一引擎）
     conn = db_conn()
     ids = [
         r["college_id"]
@@ -271,74 +278,172 @@ async def ai_tune_plan(plan_id: str):
     ]
     conn.close()
 
-    college_pool = search_colleges(college_ids=ids, limit=500)
-    pool_names = {c["id"]: c["name"] for c in college_pool}
+    colleges = search_colleges(college_ids=ids, limit=2000)
+    if not colleges:
+        raise HTTPException(status_code=400, detail="No colleges found for province")
+    colleges_map = {c["id"]: c for c in colleges}
 
-    # Build context for LLM
-    slot_info = []
-    for s in slots:
-        slot_info.append(f"#{s['order']} {s['college_name']} ({s['tier']}, 概率 {s.get('group_prob', s.get('admission_prob', 0)):.0%})")
-    slot_text = "\n".join(slot_info)
-    college_names = "\n".join(f"{pool_names[k]}" for k in list(pool_names.keys())[:50]) + f"\n...等共 {len(pool_names)} 所院校"
+    user_id = plan.get("user_id") or "default"
+    profile = {
+        "rank": plan["rank"],
+        "province": plan["province"],
+        "exam_category": plan["exam_category"],
+        "user_id": user_id,
+    }
+    weights = get_user_weights(user_id)
+    try:
+        rec_result = generate_group_recommendations(
+            colleges_map,
+            province=plan["province"],
+            exam_category=plan["exam_category"],
+            user_profile=profile,
+            weights=weights,
+            top_n=300,
+            strategy=_resolve_strategies(None, None),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成候选失败: {str(e)}")
+
+    # 2. 每档候选按综合质量分层抽取：概率桶（梯度覆盖）+ 桶内质量分（优选）
+    CITY_TIER_WEIGHTS = {"一线": 1.0, "新一线": 0.85, "二线": 0.7, "三线": 0.55, "其他": 0.4}
+
+    def _level_weight(level: str | None) -> float:
+        level = level or ""
+        if "985" in level:
+            return 1.0
+        if "211" in level:
+            return 0.85
+        if "双一流" in level:
+            return 0.8
+        return 0.6
+
+    def _quality_score(c: dict[str, Any]) -> float:
+        col = c.get("college", {})
+        level_w = _level_weight(col.get("level"))
+        employment = min(1.0, max(0.0, col.get("employment_rate") or 0))
+        salary = min(1.0, (col.get("avg_salary") or 0) / 15_000.0)
+        city_w = CITY_TIER_WEIGHTS.get(col.get("city_tier") or "", 0.4)
+        return level_w * 0.30 + employment * 0.25 + salary * 0.25 + city_w * 0.20
+
+    def _pick_tier(tier: str) -> list[dict[str, Any]]:
+        items = [{**it, "_tier": tier} for it in rec_result["tiers"].get(tier, [])]
+        items.sort(key=lambda x: -x["group_prob"])
+        if len(items) <= 15:
+            return items
+        # 均分 3 个概率桶，每桶内按质量分取 top5，共 15 条
+        buckets = [items[i::3] for i in range(3)]
+        picked: list[dict[str, Any]] = []
+        for b in buckets:
+            b.sort(key=lambda x: -_quality_score(x))
+            picked.extend(b[:5])
+        return picked
+
+    candidates: list[dict[str, Any]] = []
+    for tier in ("reach", "steady", "safe"):
+        candidates.extend(_pick_tier(tier))
+    candidates.sort(key=lambda x: -x["group_prob"])
+
+    # 3. 构建 LLM 上下文：当前表 + 精选候选池（含学校质量标注）
+    slot_text = "\n".join(
+        f"#{s['order']} {s['college_name']} "
+        f"[{s.get('tier','')}] 组{s.get('group_code','')} 概率{s.get('group_prob', s.get('admission_prob', 0)):.0%}"
+        for s in slots
+    )
+
+    def _cand_line(i: int, c: dict[str, Any]) -> str:
+        col = c.get("college", {})
+        level = col.get("level") or "普通"
+        emp = col.get("employment_rate")
+        emp_txt = f"{emp:.1%}" if isinstance(emp, (int, float)) else "-"
+        salary = col.get("avg_salary")
+        salary_txt = f"{salary/1000:.1f}k" if isinstance(salary, (int, float)) and salary else "-"
+        city = col.get("city_tier") or "-"
+        return (
+            f"{i+1}. {col.get('name','?')} 组{c['group_code']} 概率{c['group_prob']:.0%}（{c['_tier']}）"
+            f" | 层次:{level} 就业率:{emp_txt} 薪资:{salary_txt} 城市:{city}"
+        )
+
+    cand_text = "\n".join(_cand_line(i, c) for i, c in enumerate(candidates))
 
     prompt = (
-        f"你是高考志愿填报专家。当前志愿表方案如下（省份：{plan['province']}，科类：{plan['exam_category']}，位次：{plan['rank']}）：\n\n"
-        f"当前志愿：\n{slot_text}\n\n"
-        f"可选院校池（前50所）：\n{college_names}\n\n"
-        "请优化这份志愿表，确保：\n"
-        "1. 冲稳保梯度合理（冲刺<0.45，稳妥0.45-0.8，保底>0.8）\n"
-        "2. 无倒序（录取概率应升序排列）\n"
-        "3. 使用可选院校池中的院校，不得虚构\n"
-        "4. 每档至少3个志愿\n\n"
-        "以JSON格式输出优化后的志愿表，格式：{\"slots\": [{\"college_name\": \"...\", \"tier\": \"reach/steady/safe\", \"admission_prob\": 0.XX, \"reason\": \"...\"}]}"
+        f"你是资深高考志愿填报顾问。省份：{plan['province']}，科类：{plan['exam_category']}，位次：{plan['rank']}。\n\n"
+        f"用户当前志愿表（按志愿顺序）：\n{slot_text}\n\n"
+        f"以下是系统基于真实录取数据为这位考生算出的候选池（编号-院校 组号 录取概率 层次/就业率/薪资/城市，全部真实）：\n{cand_text}\n\n"
+        "请对用户当前志愿表逐条点评并给出优化建议。要求：\n"
+        "1. 对每个志愿给出 action（keep=保留 / swap=建议替换），如替换请给出建议的候选池编号和理由\n"
+        "2. 关注冲稳保梯度、倒序、保底是否足够稳固、相邻志愿差距是否过小\n"
+        "3. 在概率合适的前提下，优先推荐层次更高、就业更强、薪资更优、城市更好的院校（参考候选池中的标注）\n"
+        "4. **不得虚构院校或候选编号**，引用的替换目标必须来自上面候选池\n"
+        "5. 最后给一段整体总结（字数不超过120）。\n\n"
+        "以JSON输出，格式：\n"
+        "{\"summary\": \"整体总结\", \"advice\": [{\"order\": 1, \"action\": \"keep|swap\", \"suggest_index\": 编号(仅swap时需要，0表示不指定), \"reason\": \"点评与理由\"}]}\n"
+        "**要求**：\"advice\" 数组只需包含真正需要调整的志愿（action=\"swap\" 的，或 keep 但值得提醒的），不要逐条把所有志愿都列出来——只点评有问题的、能改进的志愿即可，数量控制在 5-15 条。"
     )
 
     try:
-        reply = await complete(prompt=prompt, system_prompt="你是一个志愿填报专家，只输出JSON。", temperature=0.3, max_tokens=2048)
-        # Extract JSON from reply
+        reply = await asyncio.wait_for(
+            complete(
+                prompt=prompt,
+                system_prompt="你是一个志愿填报专家，只输出JSON。",
+                temperature=0.3,
+                max_tokens=2048,
+                model="deepseek-v4-flash",
+            ),
+            timeout=30,
+        )
         import json
         import re
 
         json_match = re.search(r"\{.*\}", reply, re.DOTALL)
         if not json_match:
             raise ValueError("LLM返回格式错误")
-
         parsed = json.loads(json_match.group())
-        new_slots = parsed.get("slots", [])
-        if not new_slots:
-            raise ValueError("LLM未返回有效slots")
+        advice = parsed.get("advice", [])
+        if not advice:
+            raise ValueError("LLM未返回有效建议")
 
-        # Validate: only use real colleges from pool
-        valid_slots = []
-        order = 1
-        for s in new_slots:
-            cid = None
-            for pid, pname in pool_names.items():
-                if s["college_name"] in pname or pname in s["college_name"]:
-                    cid = pid
-                    break
-            if not cid:
-                continue
-            valid_slots.append({
-                "college_id": cid,
-                "college_name": s["college_name"],
-                "major_id": "GEN",
-                "group_code": "",
-                "tier": s.get("tier", "steady"),
-                "admission_prob": min(0.99, max(0.01, s.get("admission_prob", 0.5))),
+        # 4. 校验并还原候选编号 -> 真实院校名（不可虚构）
+        cand_by_idx = {i + 1: c for i, c in enumerate(candidates)}
+        clean_advice: list[dict[str, Any]] = []
+        for a in advice:
+            try:
+                order = int(a.get("order", 0))
+            except (TypeError, ValueError):
+                order = 0
+            sidx_raw = a.get("suggest_index")
+            suggest_college = None
+            try:
+                sidx = int(sidx_raw) if sidx_raw not in (None, "", 0) else None
+            except (TypeError, ValueError):
+                sidx = None
+            if sidx and sidx in cand_by_idx:
+                c = cand_by_idx[sidx]
+                suggest_college = f"{c['college']['name']} 组{c['group_code']}（{c['group_prob']:.0%}）"
+            elif a.get("action") == "swap":
+                continue  # swap 但给了无效编号 —— 丢弃防虚构
+            clean_advice.append({
                 "order": order,
-                "reason": s.get("reason", f"AI调整-{s.get('tier', '')}"),
+                "college_name": slots[order - 1]["college_name"] if 0 < order <= len(slots) else "?",
+                "action": a.get("action", "keep"),
+                "suggest_college": suggest_college,
+                "reason": a.get("reason", ""),
             })
-            order += 1
 
-        if not valid_slots:
-            raise ValueError("调整后无双表，LLM生成了虚构院校")
+        return {
+            "plan_id": plan_id,
+            "summary": parsed.get("summary", ""),
+            "advice": clean_advice,
+            "message": f"AI 优化建议已生成，共点评 {len(clean_advice)} 个志愿",
+            "reference": False,
+        }
 
-        updated = update_plan(plan_id, valid_slots)
-        return {"plan": updated, "message": f"AI调整完成，共 {len(valid_slots)} 个志愿", "original_count": len(slots)}
-
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="AI 服务繁忙，请稍后再试")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI调整失败: {str(e)}")
+        detail = "AI 服务繁忙，请稍后再试"
+        if "格式错误" in str(e) or "有效建议" in str(e):
+            detail = f"AI 优化建议失败: {str(e)}"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.post("/volunteer/plan/{plan_id}/clone")
