@@ -32,9 +32,20 @@ def search_colleges(
         conditions.append("c.region = ?")
         params.append(region)
     if cities:
-        city_likes = [c.rstrip("市") for c in cities]
-        conditions.append("(" + " OR ".join(["c.city LIKE ?" for _ in city_likes]) + ")")
-        params.extend([f"{c}%" for c in city_likes])
+        # 直辖市（北京/上海/天津/重庆）按省份匹配；其余按城市前缀匹配
+        muni = {"北京", "上海", "天津", "重庆"}
+        muni_likes = [c for c in cities if c in muni]
+        city_likes = [c.rstrip("市") for c in cities if c not in muni]
+        muni_clauses: list[str] = []
+        if muni_likes:
+            placeholders = ",".join("?" * len(muni_likes))
+            muni_clauses.append(f"c.province IN ({placeholders})")
+            params.extend(muni_likes)
+        if city_likes:
+            muni_clauses.append("(" + " OR ".join(["c.city LIKE ?" for _ in city_likes]) + ")")
+            params.extend([f"{c}%" for c in city_likes])
+        if muni_clauses:
+            conditions.append("(" + " OR ".join(muni_clauses) + ")")
     if level:
         conditions.append("c.level = ?")
         params.append(level)

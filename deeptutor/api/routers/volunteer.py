@@ -529,11 +529,18 @@ async def list_major_categories():
     return {"categories": cats}
 
 
+MUNICIPALITIES = {"北京", "上海", "天津", "重庆"}
+
+
 @router.get("/volunteer/cities")
 async def list_cities(region: str | None = None):
     from deeptutor.services.custom.db import get_connection
     conn = get_connection()
-    sql = "SELECT DISTINCT RTRIM(city, '市') AS city, province, region FROM colleges WHERE 1=1"
+    # 直辖市（北京/上海/天津/重庆）的 colleges.city 存的是区名，统一折叠为市名
+    sql = (
+        "SELECT DISTINCT RTRIM(city, '市') AS city, province, region FROM colleges"
+        " WHERE city IS NOT NULL AND city != ''"
+    )
     params: list[str] = []
     if region:
         sql += " AND region=?"
@@ -541,7 +548,15 @@ async def list_cities(region: str | None = None):
     sql += " ORDER BY region, city"
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     conn.close()
-    return {"cities": rows}
+
+    seen: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        prov = r["province"] or ""
+        label = prov if prov in MUNICIPALITIES else r["city"]
+        key = (prov, label)
+        if key not in seen:
+            seen[key] = {"city": label, "province": prov, "region": r.get("region")}
+    return {"cities": list(seen.values())}
 
 
 @router.get("/volunteer/score-distribution")
