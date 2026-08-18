@@ -124,6 +124,7 @@ def init_db() -> None:
         enrollment_count INTEGER DEFAULT 0,
         exam_category TEXT DEFAULT '',
         group_code TEXT DEFAULT '',
+        rank_source TEXT DEFAULT 'official',
         PRIMARY KEY (college_id, major_id, province, year, exam_category, group_code)
     );
     CREATE INDEX IF NOT EXISTS idx_admission_ranks_college ON admission_ranks(college_id);
@@ -170,6 +171,7 @@ def init_db() -> None:
         province_rules TEXT NOT NULL,
         slots TEXT NOT NULL,
         status TEXT DEFAULT 'draft',
+        batch TEXT DEFAULT '本科批',
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL
     );
@@ -268,6 +270,13 @@ def init_db() -> None:
             """)
     except Exception:
         pass  # table might not exist yet; CREATE TABLE handles it
+    # Migration: add rank_source (官方位次 / 预估位次) to admission_ranks
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(admission_ranks)").fetchall()]
+        if "rank_source" not in cols:
+            conn.execute("ALTER TABLE admission_ranks ADD COLUMN rank_source TEXT DEFAULT 'official'")
+    except Exception:
+        pass
     # Migration: add subject_requirement / metadata / timestamps to college_majors
     for col, coltype in [
         ("subject_requirement", "TEXT DEFAULT ''"),
@@ -306,6 +315,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE colleges ADD COLUMN official_code TEXT DEFAULT ''")
     except Exception:
         pass
+    # Migration: add batch column to volunteer_plans (Phase 20 提前批支持)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(volunteer_plans)").fetchall()]
+        if "batch" not in cols:
+            conn.execute("ALTER TABLE volunteer_plans ADD COLUMN batch TEXT DEFAULT '本科批'")
+    except Exception:
+        pass
     # Migration: college code map (province code <-> national official code)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS college_code_map (
@@ -316,7 +332,30 @@ def init_db() -> None:
             source TEXT DEFAULT '',
             PRIMARY KEY (official_code, province_code)
         );
+        -- 院校-专业名映射（major_id 为院校内专业序号，专业名以各院校招生目录为准）
+        CREATE TABLE IF NOT EXISTS college_major_name (
+            college_id TEXT NOT NULL,
+            major_id TEXT NOT NULL,
+            major_name TEXT NOT NULL,
+            full_name TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            subject_requirement TEXT DEFAULT '',
+            tuition REAL DEFAULT 0,
+            years TEXT DEFAULT '',
+            campus TEXT DEFAULT '',
+            PRIMARY KEY (college_id, major_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cmn_college ON college_major_name(college_id);
     """)
+    # Migration: add years/campus to college_major_name
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(college_major_name)").fetchall()]
+        if "years" not in cols:
+            conn.execute("ALTER TABLE college_major_name ADD COLUMN years TEXT DEFAULT ''")
+        if "campus" not in cols:
+            conn.execute("ALTER TABLE college_major_name ADD COLUMN campus TEXT DEFAULT ''")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
     from deeptutor.services.custom.medical_dao import seed_default_restrictions

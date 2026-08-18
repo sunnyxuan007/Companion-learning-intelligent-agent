@@ -90,6 +90,12 @@ def _parse_admission(filepath: Path, exam_category: str, year: int) -> list[dict
     name_to_id = {}
     for r in conn.execute("SELECT id, name FROM colleges").fetchall():
         name_to_id[r["name"]] = r["id"]
+    code_map = {}
+    for r in conn.execute(
+        "SELECT province_code, official_code FROM college_code_map WHERE province = ?",
+        (PROVINCE,),
+    ).fetchall():
+        code_map[str(r[0]).strip()] = str(r[1])
     conn.close()
 
     records: list[dict] = []
@@ -109,9 +115,12 @@ def _parse_admission(filepath: Path, exam_category: str, year: int) -> list[dict
             errors += 1
             continue
 
-        college_id = name_to_id.get(college_name)
+        # 优先代码映射（官方表地方码 → 官方码），fallback 名称匹配（strip 尾空格）
+        college_id = code_map.get(college_code)
+        if not college_id:
+            college_id = name_to_id.get(college_name)
         if not college_id and "(" in college_name:
-            base_name = college_name.split("(")[0]
+            base_name = college_name.split("(")[0].strip()
             college_id = name_to_id.get(base_name)
 
         if not college_id:

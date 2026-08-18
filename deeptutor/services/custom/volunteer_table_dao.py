@@ -15,13 +15,14 @@ def create_plan(
     rank: int,
     province_rules: dict[str, Any],
     slots: list[dict[str, Any]],
+    batch: str = "本科批",
 ) -> dict[str, Any]:
     now = time.time()
     plan_id = str(uuid.uuid4())
     conn = get_connection()
     conn.execute(
-        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, batch, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             plan_id,
             user_id,
@@ -31,6 +32,7 @@ def create_plan(
             json.dumps(province_rules, ensure_ascii=False),
             json.dumps(slots, ensure_ascii=False),
             "draft",
+            batch,
             now,
             now,
         ),
@@ -105,8 +107,8 @@ def clone_plan(plan_id: str, new_user_id: str, name: str | None = None) -> dict[
             s["reason"] = f"{name} — {s.get('reason', '')}"
     conn = get_connection()
     conn.execute(
-        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, batch, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             new_id,
             new_user_id,
@@ -116,6 +118,7 @@ def clone_plan(plan_id: str, new_user_id: str, name: str | None = None) -> dict[
             json.dumps(original["province_rules"], ensure_ascii=False),
             json.dumps(slots, ensure_ascii=False),
             "draft",
+            original.get("batch", "本科批"),
             now,
             now,
         ),

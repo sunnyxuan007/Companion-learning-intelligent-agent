@@ -1390,6 +1390,157 @@ L3 memory (profile.md / preferences.md)
 |------|------|
 | `scripts/migrate_remaining_cu.py` | 处置表改写为最终版（MIG=25 / DELETE=4 / KEEP=0），复用 Phase 19 迁移逻辑 |
 
+### Phase 20 🚀 专业元数据（学制/校区/学费）+ 2026 官方专业目录比对
+
+> 状态：方向 A（元数据）已完成；方向 B（比对 + 提前批 + 批次选择）**已完成**（2026-08-17）。
+
+#### 方向 A：志愿专业行加 学制/校区/学费 ✅（2026-08-17）
+
+**背景**：PDF 目录每专业含「学制：4年 / 学费：xxx元/学年 / 办学地点：xx校区」，Excel 已有结构化列但未入库。用户要求这三个字段展示在志愿（方案 slot + 浏览卡片）的每个专业行。
+
+**实施**：
+| 文件 | 说明 |
+|------|------|
+| `deeptutor/services/custom/db.py` | `college_major_name` 加 `years`/`campus` 列（幂等 ALTER + CREATE 同步） |
+| `scripts/backfill_major_meta.py` | **新建**——从 Excel 回填：学制 36827 行（col17），校区 31434 行（col12 备注正则 `[（(](xx校区/校本部/xx区)[）)]` 提取）；学费列原有 |
+| `deeptutor/services/custom/volunteer_scorer.py` | `major_ranks` JOIN 带出 `years`/`campus`/`tuition` → `majors_per_group` → `score_group` 写入 `scored_majors` |
+| `deeptutor/api/routers/volunteer_table.py` | `create_plan` slot majors 透传三字段；**顺带修复** major_name 取错源（原来查全局 `majors` 表 → 改用 scorer 的 `college_major_name.major_name`） |
+| `web/app/(workspace)/volunteer/page.tsx` | `SlotMajor` 类型 + `formatMajorMeta()` helper（`3年 · 仙溪校区 · 4980元/年`）；浏览卡片 + slot 专业行均展示 |
+
+**验证**：浏览推荐 `广州城建职业学院 g507 智能交通技术: 学制3 校区清远校区 学费20000`；plan slot 三字段完整；`tsc --noEmit` 无错；pytest 191 passed。
+
+#### 方向 B：2026 官方专业目录比对（PDF vs 库）✅
+
+**数据源**：`/home/sunnyxuan2/桌面/data for agent/` — 物理版 672 页 / 历史版 376 页（文字型，已全量解析）+ 志愿指南 684 页（纯扫描图，OCR 待装）+ `2026广东专业目录更正表.xlsx`（12 校勘误）。
+
+**已完成**：
+- `scripts/parse_gd_pdf.py` — 按列切分解析器（x 区域归属 + 组头 + 跨页 merge + 跳过目录页）；物理 1708 校/4373 组/16953 专业、历史 1463 校/1811 组/7546 专业 → `data/user/custom/pdf_parse/gd_2026_{physics,history}.json`
+- `scripts/parse_correction_table.py` — 更正表解析（已修复：同校多代码行 blocks 累积 + 组头同行 `专业组204 23`）；哈理工 g208-213 官方组号与库中已补明细**完全一致**（9 组补对了）
+- 更正表勘误语义确认：**非重编号**，是「原刊登组号错版 → 更正后组号」（如哈理工 PDF g203/204/205 是错版，库 GEN g208-213 才是权威最终版）
+- 更正表仅 12 校；**佛山(11847)/广技师(10588)不在其中** → 三组明细只能从 PDF 定向精解
+- **佛山 g205/g210 定向精解**（409 页三栏，计划数与 GEN 吻合）：
+  - g205 = 029动物医学(5年)160 + 030动物科学35 + 031生物工程40 + 032交通工程80 + 033新能源材料与器件130 + 034储能科学与工程80 + 035材料化学25 + 036材料科学与工程40 + 037化学工程与工艺15 + 038食品科学与工程60 + 039食品质量与安全35（合计 700 = GEN）
+  - g210 = 047机械设计制造及其自动化80 + 048自动化80（合计 160 = GEN）
+- **广技师 g204** = 014电气工程及其自动化(职教师资创新实验班) 30 人（291 页，单专业组）
+- **佛山/广技师明细入库**：扩展 `scripts/backfill_group_majors.py`，46 条专业行写入（g205=700✓ / g210=160✓ / g204=30✓，字段含学制/校区/学费）
+- **中外合作大学缺失修复**：根因是 `import_guangdong_data_v3.py` 名称匹配 `split("(")[0]` 留尾空格导致精确匹配失败；改为**代码映射优先 + strip 回退**，6 所补回（广东以色列 1、宁波诺丁汉 4、香港城市东莞 1、西交利物浦 3、深圳北理 4、北师香港 3）。**注意**：重跑官方投档表会清空广东全部 admission_ranks，需用 `import_excel_v3.py` 恢复历史 + 重跑 `backfill_group_majors.py`
+- **提前批本科六类导入**：新建 `scripts/import_advance_batch.py`（723 GEN 组 + 1286 专业行）：
+  - 军检类 57校382组1493行 / 非军检类 89校245组735行 / 特殊类型 112校232组608行 / 卫生专项 12校318组636行 / 教师专项 21校247组501行 / 招飞 4校4组8行 / 本科批 1061校5966组6035行
+  - 组号规则：普通批 `2xx`、提前批 `1xx`、特殊类型 `70x`，主键无冲突
+  - 坑：`college_major_name` 无 created_at 列；code_map 需含全部 colleges.id（补 81002/92036）
+- **批次选择功能**（后端 + 前端）：
+  - `generate_group_recommendations` 加 `batch="本科批"` 参数，SQL 过滤 `(year < 2026 OR batch = ?)`（2026 限定目标批次，历史年全保留）
+  - `volunteer.py` BrowseRequest/RecommendRequest 加 `batch`；`volunteer_table.py` CreatePlanRequest 加 `batch`，ai_tune 读 `plan.get("batch")`；`volunteer_plans` 表加 `batch` 列；`volunteer_table_dao.py` create_plan/clone_plan 支持
+  - 前端 `page.tsx`：考生信息加"招生批次"下拉（7 批次值）；browse / plan/create 请求体带 `batch`；非本科批显示专项报考限制提示
+- **双轨编码修复**：`import_excel_v3.py`（2023-2025 历史）用 Excel 地方码写入，而 2026 用官方码 → 同一校历史/新数据分裂。新建 `scripts/migrate_hist_ranks_to_official.py`：77740 历史行改官方码 + 2111 重复行删除，地方码行残留 = 0，孤儿引用 = 0（备份 `bak_before_histcode_20260817_110302`）
+- **2026 本科批专业明细补全**：官方投档表只有组级 GEN 位次（本科批 99.7% 组 GEN-only，无组内专业）。新建 `scripts/import_batch_majors_2026.py` 从专家版 Excel 本科批次（`本科批次`→DB `本科批`）导入 21655 专业行 + 21655 `college_major_name` 行（含 学制/学费/计划数，min_rank=0 靠组级 GEN 兜底）。**关键前提**：Excel 组号与官方投档表组号 100% 一致（dry-run 核验 21697 行仅 5 行无 GEN 组）。补入后本科批 GEN-only 从 99.7% → **0.1%（物理）/ 0.2%（历史）**，45 个 slot 全部带组内专业明细
+- **三个缺组补入 + rank_source 预估标记**：组级差异穷尽发现 3 个真实缺组（官方投档表有组但 DB 缺失）：
+  - 哈理工 **g215**（英语，联合培养麦考瑞"2+2"）——官方投档表已有 GEN 位次 266942，仅补专业明细
+  - 成信 **g212**（环境科学，联合培养兰卡斯特"2+2"）——官方投档 0 人无位次 → **预估 118244**（取校最低位次=最差组 g214）
+  - 中南 **g216**（护理学，高校专项）——官方投档 0 人无位次 → **预估 24936**（取校最低位次=最差组 g207）
+  - 预估规则（用户决策）：① 同校其他正常收分组相同专业位次优先 ② 无同专业 → 取该校所有专业组最低位次 ③ 分数用 2025 分数段换算（2026 无分段数据）
+  - `admission_ranks` 加 **`rank_source`** 列（`official`=官方投档位次 / `estimated`=预估位次，幂等 ALTER）；`generate_group_recommendations` + browse/create_plan 透传 `rank_source`；前端卡片/志愿槽显示"预估位次"紫色徽标
+  - 脚本 `scripts/backfill_missing_groups.py`（幂等）；备份 `bak_before_missing_groups_20260817_152911`
+  - 验证：rank=150000 时中南 g216 reach 0.083 / 成信 g212 steady 0.394 / 哈理工 g215 safe 0.719，rank_source 全部正确；`pytest` 191 passed；`tsc --noEmit` 无错
+- **GEN-only 残留清零（第二批 6 组）**：本科批 GEN-only 从 物理 2 + 历史 4 归零。补齐组明细：
+  - 哈理工 **g214**（物理·联合培养 8人）= 038 信息与计算科学（麦考瑞 2+2，46300元）；**g207**（历史·联合培养 5人）= 003 英语（麦考瑞 2+2，46900元）——来源更正表
+  - 川师 **g218**（历史·联合培养 1人）= 016 英语（中外高水平 3+2 麦考瑞，38300元）——与物理 g223 同构
+  - 香港珠海 **g201**（历史 6人）= 文学与社会科学院 + 商学院；**g202**（物理 10人）= 文学与社科 + 商学院 + 理工学院（104750元/年）——Excel 明细，**根因**：`college_code_map` 缺 81012 映射导致 import_batch_majors_2026.py 跳过
+  - 中南财 **g211**（历史·中外合作 5人）= 040 国际经贸规则（罗马一大中外合作，75000元）——用户确认
+  - `scripts/backfill_missing_groups.py` 扩展：支持多科类（GROUPS 增 exam_category）+ college_major_name 幂等（已存在则跳过，保留原有明细）；补 campus 空值（哈理工校本部/川师成龙/中南财校本部）
+  - 备份 `bak_before_genonly6_20260817_162046`
+  - 验证：物理/历史 GEN-only=0；全量推荐 6 组全出现（中南财 g211 reach 0.109 / 川师 g218 reach 0.320 / 哈理工 g207 safe 0.910 / 香港珠海 g201 safe 0.780 / g202 steady 0.394 / 哈理工 g214 safe 0.691）；`pytest` 191 passed；`tsc --noEmit` 无错
+
+**比对结果（2026-08-17 补入后）**：
+- `scripts/compare_db_pdf.py` 只比**本科普通批**（load_db 加 `batch='本科批'` 过滤，提前批不参与——PDF 是普通批目录，避免提前批校误报）
+- 物理：PDF 1666 校 / DB 1036 校 / 真缺校 **0** / 有校无 2026 数据 661（92-94% 为专科+军警校）/ 多校 31
+- 历史：PDF 1443 校 / DB 833 校 / 真缺校 **0** / 有校无 2026 数据 630 / 多校 20
+- 剩余"本科缺数据"核实：A 类提前批院校（外交/警校/港中深/西湖大学等）在提前批已有数据，非缺漏；B 类纯专科（用户决定先不做）；C 类真缺（太原师范等特殊类型）已核实 Excel 批次归属
+- 组级差异 966/769 校（PDF 独有组 1522/602、库独有组 2314/1185）——受解析器跨列串扰 + 跨页续段丢失限制（如三明学院 header 在页底、续段跨页丢失），组级差异仅标记不穷尽；组内专业明细以 Excel 权威补全为主，PDF 仅作校级存在性校验
+
+**验证**：本科批推荐 33/33/33；提前批军检 15/15/15（样例 北航 g101 0.44）、非军检 15/15/15（中国传媒 g207 0.648）、卫生专项 6校、教师专项 10校；API create_plan 提前批军检 45 slots（13/18/14）batch 持久化 ✓；本科批 create 45 slots 全部带组内专业明细（中央民族 g205 环境科学与工程类等，含 学制/学费/概率）✓；`pytest` 191 passed；`tsc --noEmit` 无错。
+
+**待办**：
+- [ ] 解析器已知限制：组级专业跨列串扰 + 跨页续段丢失（623 校 PDF 组数 < 库）——比对以校级存在性为准，组级差异单独标记
+- [ ] tesseract OCR 装志愿指南核对批次规则（指南 684 页全扫描）
+
+#### 遗留知识
+
+- `college_major_name` 现在有 7 列：major_name/full_name/category/subject_requirement/tuition/**years**/**campus**；full_name 仍含 `(5年)(xx校区)` 旧文本，新列优先
+- PDF 解析器性能 ~0.5min/672 页；`college_for_x` 区域重叠时取最近标题（修复东软 g201 识别）
+- **批次过滤约定**：推荐/浏览/建表 SQL 统一 `(year < 2026 OR batch = ?)`——2026 数据按所选批次过滤，历史年（2023-2025）全保留参与概率计算
+- **数据写入必须用官方码**：`import_excel_v3.py` 等历史导入脚本写入前需经 `college_code_map` 转官方码（2026-08-17 已迁移修复）；2026 官方投档表/提前批用官方码直写
+- **2026 专业明细统一 min_rank=0**：2026 各组只有 GEN 行带真实位次，专业明细（Excel/提前批/backfill）一律 min_rank=0，组内专业排序/概率靠组级 GEN 位次兜底
+- **rank_source 预估位次约定**：`admission_ranks.rank_source` 标记组级 GEN 位次来源（`official`=官方投档 / `estimated`=预估）；预估位次规则 = 同校同专业位次优先，无则取该校所有专业组最低位次；预估组概率可进推荐但综合分通常低，per_tier_caps 下可能被截断属正常；前端"预估位次"徽标仅预估组显示
+
+#### 方向 C：缺学费专业定向回填 ✅（2026-08-17）
+
+**背景**：全量核验发现 108 个 `college_major_name.tuition=0` 专业行（物理 77 + 历史 31）。排查结论：绝大多数源数据（Excel col18 与官方 PDF）本身即"待定"或特殊（中外合作拟收费/厦大马来西亚分校林吉特/双学士/预科班），非导入丢失。
+
+**可提取清单（PDF 权威值）**：
+| college_id | 专业 | 科类/组 | 学费 | 校区 |
+|-----------|------|---------|------|------|
+| 4122010202 通化师范学院 | 001 智能制造工程技术 | 物理 g201 | 5400 | 长吉校区 |
+| 4122010202 通化师范学院 | 002 无人机系统应用技术 | 物理 g201 | 5400 | 长吉校区 |
+| 4154010694 西藏大学 | 008 地理科学 | 历史 g205 | 2800 | 纳金校区 |
+| 4136013440 南昌应师院 | 001 法学 | 历史 g201 | 20000 | 主校区 |
+| 4136013440 南昌应师院 | 002 小学教育 | 历史 g201 | 20000 | 主校区 |
+| 4136013440 南昌应师院 | 003 汉语言文学 | 历史 g201 | 20000 | 主校区 |
+| 4136013440 南昌应师院 | 004 财务管理 | 历史 g201 | 20000 | 主校区 |
+
+**已确认不提取**：哈尔滨商大（供应链/人工智能/新能源）、黑河（网络与新媒体×2）、沈阳理工、黑龙江大学、东北林业 g204、南昌物理 g202、成都中医药 等 PDF 明示"待定"；西藏大学/新疆师大 5 个"免费"专业因 tuition 为数值列（REAL，评分引擎依赖 cost_index 用院校级）无法存"免费"，用户决策留空（tuition=0 前端不显示，full_name 已含说明）。
+
+**实施**：直接 SQL UPDATE `college_major_name` 7 行（tuition + campus）；缺学费 108 → 101（物理 75 + 历史 26）。**注意**：通化师范 g201（001/002/003 同组）组级学费=5400，但 003 互联网金融库里 4800 属 g205（再选：化学），两者不同组不同价，勿混淆。
+
+**验证**：历史推荐端到端核验（南昌 g201 四专业 20000/主校区、西藏 g205 地理科学 2800/纳金校区 均正确带出）；`pytest` 191 passed；`tsc --noEmit` 无错。无 DB schema 变更，无备份（仅 7 行 UPDATE 可逆）。
+
+#### 方向 D：志愿填报指南 OCR 基建 + 政策灌入 RAG（2026-08-18）
+
+**数据源**：`广东省2026年普通高等学校志愿填报指南2026.6.10.pdf`（684 页纯扫描件，RICOH 扫描，无文本层）。用户用 WPS 转出**部分 OCR 产物 DOCX**（173KB，含正文 1-4 章：考试科目/批次投档/体检/志愿填报，约 22 页；不含后续 600+ 页 2025 录取排位表）。
+
+**OCR 环境结论**：本机仅 `libtesseract4`（无 CLI/chi_sim 语言包）、无 paddle/rapidocr；PyMuPDF 1.28.0 可用于渲染。本次走 DOCX 通道，未装新 OCR 引擎。**684 页 PDF 仍无文本层**，排位表部分需用户后续继续转换。
+
+**新增文件**：
+| 文件 | 说明 |
+|------|------|
+| `scripts/extract_guide_policy.py` | DOCX → 政策章节/批次规则/体检规则 JSON（`data/user/custom/ocr_guide/`） |
+| `scripts/seed_guide_policy.py` | 政策正文灌入 RAG（`source="广东2026志愿指南"`, `doc_type="policy"`，幂等：先 `delete_source` 再灌，14 条 chunk） |
+| `scripts/compare_batch_rules.py` | 指南批次分类 vs 系统硬编码核对报告 |
+
+**RAG 检索改进**（`store.py` + `retriever.py`）：
+- `search_by_keywords`：SQL 由 `ORDER BY id` 改为 `ORDER BY 关键词命中数 DESC, id ASC`（相关度优先）
+- `retrieve_for_chat`：keyword 结果按 `doc_type` 排序（`policy` 官方内容优先于 FAQ）
+- 验证：`高考总分怎么构成`/`体检受限专业`/`提前批有哪些类型` 均正确命中 policy chunk
+- **已知局限**：hash embedding（384 维）无语义能力，`search_chunks` 向量检索对同义改写无效，仅 keyword 有效；FAQ 精确标题多词命中时仍可能排前（合理）
+
+**批次规则核对结论**：指南批次分类（军检/非军检/教师/卫生/特殊类型/招飞）与前端 7 个选项**一一对应**，投档模式"院校专业组"与 `PROVINCE_RULES` 一致——**无需改代码**。45 组数/ratio 指南未提供（正文"具体时间及安排另行通知"），时间表无法从本书提取，`AdmissionCountdown.tsx` 硬编码日期保留。
+
+**验证**：`pytest` 191 passed；`tsc --noEmit` 无错；RAG 检索冒烟通过；seed 幂等重跑 OK。
+
+#### 方向 E：指南排位表试点解析 + 交叉验证（2026-08-18）
+
+**背景**：用户更新完整版 DOCX（`..._20260818095218.docx`，57.8MB，document.xml 135MB / 10480 文件 / 9772 图），含第六章 2025 排位表（物理 0-80MB / 历史 80-120MB / 艺体 119-135MB，1690 表格 29 万单元格）。用户选择"尝试解析排位表"（试点+交叉验证，不写库）。
+
+**乱码结论**：全文档仅 4 个替换字符（�），**乱码可忽略**。
+
+**DOCX 结构**：`<w:tbl>` 是空壳，真实数据在表格后独立段落流。排位表每页 = 页眉 + 表头碎片 + 记录段（左右列交织）：
+- **行式记录**（`10004北京交通大学 107` / `208 专业组208 90` / `007 与智能制造) 19`）→ 可解析
+- **列式区块**（清华等：先全代码再全名称再全数字）→ 按列对齐复杂，跳过
+- 数据列（`95 689`=最低排位 最低分）与左列交错，行级对齐不可靠
+
+**试点结果**（`scripts/parse_guide_ranks.py`，物理本科普通批段 8053-65970）：
+- 解析出 **256 院校 / 1147 组 / 3251 专业**（4654 条）→ `data/user/custom/ocr_guide/guide_ranks_pilot.json`
+- 院校级：国标码→官方码 248/256，库 2025 广东物理有数据 244/256（**95% 吻合**）
+- 组号体系：**指南排位表组号 ≠ 库组号**（北交大指南 208/209 vs 库 g202/g203），但专业代码+计划数与库完全吻合（指南 007 计划19 = 库 g203 007 计划19）
+- 专业级：(college, major_code)+计划匹配 37.4%，受限原因=专业代码组内序号跨组重复
+
+**结论**：物理/历史本科批 2025 已完整（Excel 导入组号更规范），指南排位表行级对齐成本高且组号不同源；**不投入全量解析**。排位表可作院校名单第三方校验（95% 吻合），未来做历史回测（Phase 10 6b）时可参考。报告见 `data/user/custom/ocr_guide/guide_ranks_report.md`。
+
+| 文件 | 说明 |
+|------|------|
+| `scripts/parse_guide_ranks.py` | 试点解析器 + `--report` 交叉验证（新建） |
+| `data/user/custom/ocr_guide/guide_ranks_pilot.json` | 4654 条试点记录（新建） |
+| `data/user/custom/ocr_guide/guide_ranks_report.md` | 验证报告（新建） |
 
 ## 使用方式
 

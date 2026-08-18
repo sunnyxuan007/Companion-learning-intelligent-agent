@@ -296,6 +296,24 @@ def _calc_admission_prob(
     return prob, evidence
 
 
+_bargain_cache: dict[tuple, float] = {}
+
+
+def _bargain_from_year_ranks(year_ranks: dict[int, int]) -> float:
+    """基于 {year: best_rank} 计算捡漏分（大小年波动）。"""
+    if len(year_ranks) < 2:
+        return 0.0
+    vals = list(year_ranks.values())
+    mean_r = sum(vals) / len(vals)
+    std_r = (max(vals) - min(vals)) / 2.0 if len(vals) > 1 else mean_r * 0.1
+    if std_r == 0:
+        return 0.0
+    latest_rank = max(year_ranks.items(), key=lambda x: x[0])[1]
+    # If latest rank is significantly lower (more competitive) -> bargain opportunity
+    z = (mean_r - latest_rank) / std_r
+    return max(0.0, min(1.0, z / 3.0))
+
+
 def _calc_bargain_score(college_id: str | None, profile: dict[str, Any]) -> float:
     if not college_id:
         return 0.0
@@ -303,9 +321,11 @@ def _calc_bargain_score(college_id: str | None, profile: dict[str, Any]) -> floa
     exam_category = profile.get("exam_category")
     if not province or not exam_category:
         return 0.0
+    key = (college_id, province, exam_category)
+    if key in _bargain_cache:
+        return _bargain_cache[key]
     from deeptutor.services.custom.admission_dao import (
         get_admission_ranks_by_college,
-        get_total_candidates,
     )
     try:
         rows = get_admission_ranks_by_college(college_id, province, exam_category=exam_category)
@@ -316,18 +336,11 @@ def _calc_bargain_score(college_id: str | None, profile: dict[str, Any]) -> floa
             if rk > 0:
                 if yr not in year_ranks or rk < year_ranks[yr]:
                     year_ranks[yr] = rk
-        if len(year_ranks) < 2:
-            return 0.0
-        vals = list(year_ranks.values())
-        mean_r = sum(vals) / len(vals)
-        std_r = (max(vals) - min(vals)) / 2.0 if len(vals) > 1 else mean_r * 0.1
-        if std_r == 0:
-            return 0.0
-        latest_rank = max(year_ranks.items(), key=lambda x: x[0])[1]
-        # If latest rank is significantly lower (more competitive) -> bargain opportunity
-        z = (mean_r - latest_rank) / std_r
-        return max(0.0, min(1.0, z / 3.0))
+        score = _bargain_from_year_ranks(year_ranks)
+        _bargain_cache[key] = score
+        return score
     except Exception:
+        _bargain_cache[key] = 0.0
         return 0.0
 
 
@@ -545,6 +558,9 @@ def score_group(
         scored_majors.append({
             "major_id": mid,
             "major_name": m.get("major_name", ""),
+            "years": m.get("years", ""),
+            "campus": m.get("campus", ""),
+            "tuition": m.get("tuition", 0),
             "admission_prob": major_prob,
             "sort_score": sort_score,
             "evidence": ev,
@@ -601,6 +617,7 @@ def generate_group_recommendations(
     major_categories: list[str] | None = None,
     score_rank_range: tuple[int, int] | None = None,
     per_tier_caps: dict[str, int] | None = None,
+    batch: str = "本科批",
 ) -> dict[str, Any]:
     from deeptutor.services.custom.db import get_connection
     from deeptutor.services.custom.admission_dao import score_to_rank
@@ -631,44 +648,75 @@ def generate_group_recommendations(
         }
 
     rank_low = 0
+    rank_high = 0
     if score_rank_range:
-        rank_low, _ = score_rank_range
+        rank_low, rank_high = score_rank_range
     elif user_profile.get("score") and user_rank:
         rank_low = score_to_rank(province, 2025, exam_category, min(750, int(user_profile["score"]) + 50)) or 0
 
     year_weights = {2025: 0.5, 2024: 0.35, 2023: 0.15}
 
-    rank_clause = ""
-    rank_params: list[int] = []
-    if rank_low > 0:
-        rank_clause = "AND EXISTS (SELECT 1 FROM admission_ranks ar2 WHERE ar2.college_id=ar.college_id AND ar2.group_code=ar.group_code AND ar2.province=ar.province AND ar2.year=ar.year AND ar2.min_rank >= ?)"
-        rank_params = [rank_low]
-
     group_years = conn.execute(
         f"""SELECT college_id, group_code, year, MIN(min_rank) as best_rank
            FROM admission_ranks ar
-           WHERE province=? AND exam_category=? AND group_code!='' AND min_rank > 0 {rank_clause}
+           WHERE province=? AND exam_category=? AND group_code!='' AND min_rank > 0
+             AND (year < 2026 OR batch = ?)
            GROUP BY college_id, group_code, year
            ORDER BY college_id, group_code, year DESC""",
-        (province, exam_category, *rank_params),
+        (province, exam_category, batch),
     ).fetchall()
 
     major_ranks = conn.execute(
-        f"""SELECT ar.college_id, ar.group_code, ar.major_id, MIN(ar.min_rank) as best_rank,
-                  COALESCE(m.name, '') as major_name
+        f"""SELECT ar.college_id, ar.group_code, ar.major_id,
+                  MIN(CASE WHEN ar.min_rank > 0 THEN ar.min_rank END) as best_rank,
+                  COALESCE(cmn.major_name, '') as major_name,
+                  COALESCE(cmn.years, '') as years,
+                  COALESCE(cmn.campus, '') as campus,
+                  COALESCE(cmn.tuition, 0) as tuition
            FROM admission_ranks ar
-           LEFT JOIN majors m ON ar.major_id = m.id
-           WHERE ar.province=? AND ar.exam_category=? AND ar.group_code!='' AND ar.major_id!='GEN' AND ar.min_rank > 0 {rank_clause}
+           LEFT JOIN college_major_name cmn ON ar.college_id = cmn.college_id AND ar.major_id = cmn.major_id
+           WHERE ar.province=? AND ar.exam_category=? AND ar.group_code!='' AND ar.major_id!='GEN'
+             AND (ar.year < 2026 OR ar.batch = ?)
            GROUP BY ar.college_id, ar.group_code, ar.major_id
            ORDER BY ar.college_id, ar.group_code, ar.major_id""",
-        (province, exam_category, *rank_params),
+        (province, exam_category, batch),
     ).fetchall()
+        # 预取捡漏分：一次查询全部 college 的年度最低位次，填充 _bargain_cache
+    _prefetch_year_ranks: dict[tuple, dict[int, int]] = {}
+    for r in conn.execute(
+        """SELECT college_id, year, MIN(min_rank) as best_rank
+           FROM admission_ranks
+           WHERE province=? AND exam_category=? AND min_rank > 0
+             AND (year < 2026 OR batch = ?)
+           GROUP BY college_id, year""",
+        (province, exam_category, batch),
+    ).fetchall():
+        bkey = (r["college_id"], province, exam_category)
+        _prefetch_year_ranks.setdefault(bkey, {})[int(r["year"])] = int(r["best_rank"])
+    for bkey, yr in _prefetch_year_ranks.items():
+        _bargain_cache[bkey] = _bargain_from_year_ranks(yr)
+    # 组级位次来源（2026 GEN 行）：official=官方投档位次 / estimated=预估位次
+    group_rank_source: dict[tuple[str, str], str] = {}
+    for r in conn.execute(
+        """SELECT college_id, group_code, rank_source
+           FROM admission_ranks
+           WHERE province=? AND exam_category=? AND major_id='GEN' AND year=? AND min_rank > 0 AND batch=?""",
+        (province, exam_category, 2026, batch),
+    ).fetchall():
+        group_rank_source[(r["college_id"], r["group_code"])] = r["rank_source"] or "official"
     conn.close()
 
     group_agg: dict[tuple[str, str], dict[int, int]] = defaultdict(dict)
     for r in group_years:
         key = (r["college_id"], r["group_code"])
         group_agg[key][int(r["year"])] = int(r["best_rank"])
+
+    if rank_low > 0:
+        # 仅保留某年存在 min_rank >= rank_low 的组（分数区间过滤）
+        group_agg = {
+            k: v for k, v in group_agg.items()
+            if any(rk >= rank_low for rk in v.values())
+        }
 
     majors_per_group: dict[tuple[str, str], list[dict]] = defaultdict(list)
     major_best_ranks: dict[tuple[str, str, str], int] = {}
@@ -677,12 +725,23 @@ def generate_group_recommendations(
         mid = r["major_id"]
         if major_category_ids and mid not in major_category_ids:
             continue
-        rk = int(r["best_rank"])
-        majors_per_group[key].append({"major_id": mid, "min_rank": rk, "major_name": r["major_name"] or ""})
+        rk = int(r["best_rank"] or 0)
+        majors_per_group[key].append({
+            "major_id": mid,
+            "min_rank": rk,
+            "major_name": r["major_name"] or "",
+            "years": r["years"] or "",
+            "campus": r["campus"] or "",
+            "tuition": r["tuition"] or 0,
+        })
         major_best_ranks[(r["college_id"], r["group_code"], mid)] = rk
 
-    valid_groups: set[tuple[str, str]] = set(majors_per_group.keys())
+    valid_groups: set[tuple[str, str]] = set(group_agg.keys())
     if major_category_ids:
+        valid_groups = {
+            (cid, gc) for (cid, gc) in valid_groups
+            if any(m["major_id"] in major_category_ids for m in majors_per_group.get((cid, gc), []))
+        }
         group_agg = {k: v for k, v in group_agg.items() if k in valid_groups}
 
     all_groups: list[dict[str, Any]] = []
@@ -717,6 +776,7 @@ def generate_group_recommendations(
             strategy=strategy,
         )
         result["college"] = college
+        result["rank_source"] = group_rank_source.get((cid, gc), "official")
         bargain = _calc_bargain_score(cid, user_profile)
         result["bargain_score"] = round(bargain, 4)
         all_groups.append(result)

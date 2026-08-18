@@ -46,6 +46,7 @@ class CreatePlanRequest(BaseModel):
     city_tier: str | None = None
     region: str | None = None
     cities: list[str] | None = None
+    batch: str = "本科批"
 
 
 class UpdateSlotsRequest(BaseModel):
@@ -70,8 +71,8 @@ async def create_plan(body: CreatePlanRequest):
     ids = [
         r["college_id"]
         for r in conn.execute(
-            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ?",
-            (body.province, body.exam_category),
+            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
+            (body.province, body.exam_category, body.batch),
         ).fetchall()
     ]
     conn.close()
@@ -106,6 +107,7 @@ async def create_plan(body: CreatePlanRequest):
             strategy=effective_strategies,
             major_categories=body.major_categories,
             score_rank_range=body.score_rank_range,
+            batch=body.batch,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成推荐失败: {str(e)}")
@@ -163,7 +165,10 @@ async def create_plan(body: CreatePlanRequest):
                 mid = m["major_id"]
                 majors.append({
                     "major_id": mid,
-                    "major_name": major_names.get(mid, mid),
+                    "major_name": m.get("major_name") or major_names.get(mid, mid),
+                    "years": m.get("years", ""),
+                    "campus": m.get("campus", ""),
+                    "tuition": m.get("tuition", 0),
                     "admission_prob": m["admission_prob"],
                     "order": len(majors) + 1,
                     "tag": m.get("tag", "可选"),
@@ -175,6 +180,7 @@ async def create_plan(body: CreatePlanRequest):
                 "group_code": item["group_code"],
                 "group_name": f"{item['group_code']}组",
                 "group_prob": item["group_prob"],
+                "rank_source": item.get("rank_source", "official"),
                 "tier": tier,
                 "order": order,
                 "adjustable": True,
@@ -184,7 +190,7 @@ async def create_plan(body: CreatePlanRequest):
             })
             order += 1
 
-    plan = dao_create(body.user_id, body.province, body.exam_category, body.rank, rules, slots)
+    plan = dao_create(body.user_id, body.province, body.exam_category, body.rank, rules, slots, batch=body.batch)
     return plan
 
 
@@ -269,11 +275,12 @@ async def ai_tune_plan(plan_id: str):
 
     # 1. 从真实录取数据取本科目候选（与 create_plan 同一引擎）
     conn = db_conn()
+    plan_batch = plan.get("batch") or "本科批"
     ids = [
         r["college_id"]
         for r in conn.execute(
-            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ?",
-            (plan["province"], plan["exam_category"]),
+            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
+            (plan["province"], plan["exam_category"], plan_batch),
         ).fetchall()
     ]
     conn.close()
@@ -300,6 +307,7 @@ async def ai_tune_plan(plan_id: str):
             weights=weights,
             top_n=300,
             strategy=_resolve_strategies(None, None),
+            batch=plan_batch,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成候选失败: {str(e)}")

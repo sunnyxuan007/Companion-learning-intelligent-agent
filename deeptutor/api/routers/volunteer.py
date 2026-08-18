@@ -117,6 +117,7 @@ class RecommendRequest(BaseModel):
     city_tier: str | None = None
     region: str | None = None
     cities: list[str] | None = None
+    batch: str = "本科批"
 
 
 @router.post("/volunteer/recommend", response_model=RecommendResponse)
@@ -155,8 +156,8 @@ async def recommend(body: RecommendRequest):
         ids = [
             r["college_id"]
             for r in conn.execute(
-                "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ?",
-                (profile.province, profile.exam_category),
+                "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
+                (profile.province, profile.exam_category, body.batch),
             ).fetchall()
         ]
         conn.close()
@@ -225,6 +226,7 @@ class BrowseRequest(BaseModel):
     city_tier: str | None = None
     region: str | None = None
     cities: list[str] | None = None
+    batch: str = "本科批"
 
 
 @router.post("/volunteer/browse", response_model=RecommendResponse)
@@ -238,8 +240,8 @@ async def browse_recommendations(body: BrowseRequest):
     ids = [
         r["college_id"]
         for r in conn.execute(
-            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ?",
-            (body.admission_province, body.exam_category),
+            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
+            (body.admission_province, body.exam_category, body.batch),
         ).fetchall()
     ]
     conn.close()
@@ -288,7 +290,30 @@ async def browse_recommendations(body: BrowseRequest):
         major_categories=body.major_categories,
         per_tier_caps=PER_TIER_CAPS_DEFAULT,
         score_rank_range=score_rank_range,
+        batch=body.batch,
     )
+
+    # 广东招生代码（按省份）：official_code -> province_code
+    province_codes: dict[str, str] = {}
+    if body.admission_province:
+        conn2 = get_connection()
+        rows = conn2.execute(
+            "SELECT official_code, province_code FROM college_code_map WHERE province = ?",
+            (body.admission_province,),
+        ).fetchall()
+        conn2.close()
+        for r in rows:
+            province_codes.setdefault(r["official_code"], r["province_code"])
+
+    import re as _re
+
+    def _lookup_province_code(college_id: str) -> str | None:
+        if not college_id:
+            return None
+        if college_id in province_codes:
+            return province_codes[college_id]
+        base = _re.sub(r"-[A-Za-z0-9]+$", "", college_id)
+        return province_codes.get(base)
 
     tiers_out: dict[str, list[dict]] = {}
     for tier_key in ("reach", "steady", "safe"):
@@ -300,8 +325,10 @@ async def browse_recommendations(body: BrowseRequest):
                 "college_level": g["college"].get("level", ""),
                 "college_province": g["college"].get("province", ""),
                 "college_city": g["college"].get("city", ""),
+                "province_code": _lookup_province_code(g["college"]["id"]),
                 "group_code": g.get("group_code", ""),
                 "group_prob": g.get("group_prob", 0.5),
+                "rank_source": g.get("rank_source", "official"),
                 "total_score": g.get("total_score", 0),
                 "detail_scores": g.get("detail_scores", {}),
                 "bargain_score": g.get("bargain_score", 0),

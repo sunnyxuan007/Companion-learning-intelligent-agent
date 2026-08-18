@@ -65,6 +65,17 @@ interface AdmissionHistoryItem {
   batch: string | null;
 }
 
+interface SlotMajor {
+  major_id: string;
+  major_name: string;
+  admission_prob: number;
+  order: number;
+  tag: string;
+  years?: string;
+  campus?: string;
+  tuition?: number;
+}
+
 interface SlotItem {
   college_id: string;
   college_name: string;
@@ -76,8 +87,9 @@ interface SlotItem {
   order: number;
   adjustable: boolean;
   reason: string;
-  majors: { major_id: string; major_name: string; admission_prob: number; order: number; tag: string }[];
+  majors: SlotMajor[];
   bargain_score?: number;
+  rank_source?: string;
 }
 
 interface PlanData {
@@ -95,12 +107,22 @@ interface PlanData {
 
 interface GroupRecItem {
   college: Record<string, unknown>;
+  province_code?: string;
   group_code: string;
   group_prob: number;
   total_score: number;
-  majors: { major_id: string; major_name: string; admission_prob: number; order: number; tag: string }[];
+  majors: SlotMajor[];
   detail_scores: Record<string, number>;
   bargain_score?: number;
+  rank_source?: string;
+}
+
+function formatMajorMeta(mj: Partial<SlotMajor>): string {
+  const parts: string[] = [];
+  if (mj.years) parts.push(`${mj.years}年`);
+  if (mj.campus) parts.push(mj.campus);
+  if (mj.tuition) parts.push(`${mj.tuition}元/年`);
+  return parts.join(" · ");
 }
 
 const USER_ID = "default";
@@ -110,6 +132,7 @@ export default function VolunteerPage() {
   const [rank, setRank] = useState("");
   const [province, setProvince] = useState("广东");
   const [examCategory, setExamCategory] = useState("物理");
+  const [batch, setBatch] = useState("本科批");
   const [electiveSubjects, setElectiveSubjects] = useState<string[]>([]);
   const [bonusPoints, setBonusPoints] = useState("");
   const [gender, setGender] = useState("");
@@ -372,6 +395,7 @@ export default function VolunteerPage() {
           ...(region ? { region: region } : {}),
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           ...(effectiveScoreRange ? { score_min: effectiveScoreRange[0], score_max: effectiveScoreRange[1] } : {}),
+          batch,
         }),
       });
       if (!res.ok) {
@@ -389,12 +413,14 @@ export default function VolunteerPage() {
               name: item.college_name,
               province: item.college_province,
             },
+            province_code: item.province_code as string | undefined,
             group_code: item.group_code as string,
             group_prob: item.group_prob as number,
             total_score: item.total_score as number,
             majors: (item.majors || []) as GroupRecItem["majors"],
             detail_scores: (item.detail_scores || {}) as Record<string, number>,
             bargain_score: item.bargain_score as number | undefined,
+            rank_source: item.rank_source as string | undefined,
           });
         }
       }
@@ -418,7 +444,7 @@ export default function VolunteerPage() {
     } finally {
       setLoading(false);
     }
-  }, [province, examCategory, rank, level, strategies, majorCategories, score, cityTier, region, selectedCities, scoreRange]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, region, selectedCities, scoreRange]);
 
   const toggleMajor = useCallback((groupKey: string, majorId: string) => {
     setCheckedMajors((prev) => {
@@ -471,6 +497,7 @@ export default function VolunteerPage() {
             rank: rank ? parseInt(rank) : 0,
             level: level || null,
             strategies: strategies.length > 0 ? strategies : ["default"],
+            batch,
           }),
         });
         if (res.ok) {
@@ -485,7 +512,7 @@ export default function VolunteerPage() {
         }
       } catch { /* ignore */ }
     }
-  }, [plan, province, examCategory, rank, level, strategies]);
+  }, [plan, province, examCategory, batch, rank, level, strategies]);
 
   const createFullPlan = useCallback(async () => {
     if (!rank) { setPlanMsg("请先输入位次"); return; }
@@ -508,6 +535,7 @@ export default function VolunteerPage() {
           ...(region ? { region: region } : {}),
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           score: score ? parseInt(score) : null,
+          batch,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).detail || "生成失败");
@@ -517,7 +545,7 @@ export default function VolunteerPage() {
       setPlanMsg(e instanceof Error ? e.message : "请求失败");
     }
     setPlanLoading(false);
-  }, [province, examCategory, rank, level, strategies, majorCategories, score, cityTier, region, selectedCities]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, region, selectedCities]);
 
   const handleRangeChange = useCallback((minScore: number, maxScore: number) => {
     setScoreRange([minScore, maxScore]);
@@ -741,6 +769,27 @@ export default function VolunteerPage() {
                 <span className="text-sm">历史类</span>
               </label>
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">招生批次</label>
+            <select
+              value={batch}
+              onChange={(e) => setBatch(e.target.value)}
+              className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
+            >
+              <option value="本科批">本科批（普通类）</option>
+              <option value="提前批本科-军检类">提前批·军检类</option>
+              <option value="提前批本科-非军检类">提前批·非军检类</option>
+              <option value="提前批本科-卫生专项">提前批·卫生专项</option>
+              <option value="提前批本科-教师专项">提前批·教师专项</option>
+              <option value="提前批本科-特殊类型招生">提前批·特殊类型招生</option>
+              <option value="提前批本科-空军海军招飞">提前批·空军海军招飞</option>
+            </select>
+            {batch !== "本科批" && (
+              <p className="mt-1 text-xs text-amber-600">
+                提前批：军检/卫生/教师等专项有特定报考条件与就业限制，请仔细核对招生章程
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">再选科目</label>
@@ -1093,7 +1142,13 @@ export default function VolunteerPage() {
                           <div className="flex items-start justify-between">
                             <div className="min-w-0">
                               <span className="text-sm font-medium text-gray-900">{c.name}</span>
+                              {g.province_code && (
+                                <span className="ml-1.5 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-600">代码 {g.province_code}</span>
+                              )}
                               <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">{g.group_code}组</span>
+                              {g.rank_source === "estimated" && (
+                                <span className="ml-1 rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-600" title="该专业组无官方投档位次，位次为预估">预估位次</span>
+                              )}
                               {(g.bargain_score ?? 0) >= 0.6 && (
                                 <span className="ml-1 rounded bg-orange-100 px-1.5 py-0.5 text-xs text-orange-600">捡漏</span>
                               )}
@@ -1136,7 +1191,10 @@ export default function VolunteerPage() {
                                       onChange={() => toggleMajor(key, mj.major_id)}
                                       className="shrink-0 accent-blue-600"
                                     />
-                                    <span className="min-w-0 flex-1 text-xs text-gray-700 truncate">{mj.major_name}</span>
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block truncate text-xs text-gray-700">{mj.major_name}</span>
+                                      <span className="block truncate text-[10px] text-gray-400">{formatMajorMeta(mj) || "\u00a0"}</span>
+                                    </span>
                                     {mj.tag && (
                                       <span className={`shrink-0 rounded px-1 py-0.5 text-xs ${tagColor}`}>{mj.tag}</span>
                                     )}
@@ -1696,6 +1754,9 @@ function PlanTierCard({
                   {(slot.bargain_score ?? 0) >= 0.6 && (
                     <span className="shrink-0 rounded bg-orange-100 px-1.5 py-0.5 text-xs text-orange-600">捡漏</span>
                   )}
+                  {slot.rank_source === "estimated" && (
+                    <span className="shrink-0 rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-600" title="该专业组无官方投档位次，位次为预估">预估位次</span>
+                  )}
                   <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${slot.tier === "reach" ? "bg-green-100 text-green-700" : slot.tier === "steady" ? "bg-yellow-100 text-yellow-700" : "bg-blue-100 text-blue-700"}`}>
                     #{slot.order}
                   </span>
@@ -1719,15 +1780,16 @@ function PlanTierCard({
               </div>
               {slot.majors && slot.majors.length > 0 && (
                 <div className="mt-2 space-y-1">
-                  {slot.majors.map((mj: { major_name?: string; tag?: string; admission_prob?: number }, mi: number) => {
+                  {slot.majors.map((mj: Partial<SlotMajor>, mi: number) => {
                     const tagColor = mj.tag === "推荐" ? "bg-green-100 text-green-700"
                       : mj.tag === "优选" ? "bg-yellow-100 text-yellow-700"
                       : "bg-gray-100 text-gray-500";
                     return (
                       <div key={mi} className="flex items-center justify-between rounded bg-white/60 px-2 py-1 text-xs">
-                        <span>
+                        <span className="min-w-0">
                           <span className="text-gray-700">{mj.major_name || ""}</span>
                           {mj.tag && <span className={`ml-1.5 rounded px-1 py-0.5 ${tagColor}`}>{mj.tag}</span>}
+                          <span className="ml-1.5 text-[10px] text-gray-400">{formatMajorMeta(mj)}</span>
                         </span>
                         {mj.admission_prob != null && (
                           <span className="text-gray-400">{Math.round(mj.admission_prob * 100)}%</span>
