@@ -114,11 +114,21 @@ def search_by_keywords(
     conn = get_connection()
     like_clauses = " OR ".join(f"content LIKE ?" for _ in keywords)
     params: list[str] = [f"%{k}%" for k in keywords]
+    # 按关键词命中数降序(相关度)再按 id 升序，使同时命中多个关键词的新内容优先
+    rank_sql = "+".join(f"(content LIKE ?)" for _ in keywords)
+    rank_params: list[str] = [f"%{k}%" for k in keywords]
     if doc_type:
-        sql = f"SELECT * FROM doc_meta_v2 WHERE ({like_clauses}) AND doc_type=? ORDER BY id LIMIT ?"
+        sql = (
+            f"SELECT * FROM doc_meta_v2 WHERE ({like_clauses}) AND doc_type=? "
+            f"ORDER BY {rank_sql} DESC, id ASC LIMIT ?"
+        )
         params.append(doc_type)
     else:
-        sql = f"SELECT * FROM doc_meta_v2 WHERE {like_clauses} ORDER BY id LIMIT ?"
+        sql = (
+            f"SELECT * FROM doc_meta_v2 WHERE {like_clauses} "
+            f"ORDER BY {rank_sql} DESC, id ASC LIMIT ?"
+        )
+    params.extend(rank_params)
     params.append(str(top_k * 3))
 
     try:

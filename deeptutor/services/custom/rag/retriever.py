@@ -16,7 +16,12 @@ def retrieve_for_chat(message: str, college_name: str | None = None, top_k: int 
     seen_titles: set[str] = set()
     merged: list[dict[str, Any]] = []
 
-    for r in kw_results:
+    # 政策/官方文档优先，FAQ/档案类靠后（官方内容权威性更高）
+    def _priority(r: dict[str, Any]) -> tuple[int, int]:
+        doc_type = r.get("doc_type", "")
+        return (0 if doc_type == "policy" else 1, r.get("id", 0))
+
+    for r in sorted(kw_results, key=_priority):
         t = r.get("title", "")
         if t not in seen_titles:
             seen_titles.add(t)
