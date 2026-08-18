@@ -15,7 +15,7 @@ def search_colleges(
     keyword: str | None = None,
     college_ids: list[str] | None = None,
     city_tier: str | None = None,
-    region: str | None = None,
+    regions: list[str] | None = None,
     cities: list[str] | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
@@ -28,9 +28,10 @@ def search_colleges(
     if city_tier:
         conditions.append("c.city_tier = ?")
         params.append(city_tier)
-    if region:
-        conditions.append("c.region = ?")
-        params.append(region)
+    if regions:
+        placeholders = ",".join("?" * len(regions))
+        conditions.append(f"c.region IN ({placeholders})")
+        params.extend(regions)
     if cities:
         # 直辖市（北京/上海/天津/重庆）按省份匹配；其余按城市前缀匹配
         muni = {"北京", "上海", "天津", "重庆"}

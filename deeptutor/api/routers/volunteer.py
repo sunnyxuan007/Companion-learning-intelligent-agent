@@ -115,7 +115,7 @@ class RecommendRequest(BaseModel):
     strategies: list[str] | None = None
     strategy: str | None = None  # deprecated, use strategies
     city_tier: str | None = None
-    region: str | None = None
+    regions: list[str] | None = None
     cities: list[str] | None = None
     batch: str = "本科批"
 
@@ -171,7 +171,7 @@ async def recommend(body: RecommendRequest):
         level=body.level,
         college_ids=ids,
         city_tier=body.city_tier,
-        region=body.region,
+        regions=body.regions,
         cities=body.cities,
         limit=2000,
     )
@@ -224,7 +224,7 @@ class BrowseRequest(BaseModel):
     score_min: int | None = None
     score_max: int | None = None
     city_tier: str | None = None
-    region: str | None = None
+    regions: list[str] | None = None
     cities: list[str] | None = None
     batch: str = "本科批"
 
@@ -250,7 +250,7 @@ async def browse_recommendations(body: BrowseRequest):
 
     colleges = search_colleges(
         college_ids=ids, limit=5000,
-        city_tier=body.city_tier, region=body.region, cities=body.cities,
+        city_tier=body.city_tier, regions=body.regions, cities=body.cities,
     )
     if not colleges:
         return RecommendResponse(tiers={"reach": [], "steady": [], "safe": []}, total_count=0)
@@ -560,7 +560,7 @@ MUNICIPALITIES = {"北京", "上海", "天津", "重庆"}
 
 
 @router.get("/volunteer/cities")
-async def list_cities(region: str | None = None):
+async def list_cities(regions: str | None = None):
     from deeptutor.services.custom.db import get_connection
     conn = get_connection()
     # 直辖市（北京/上海/天津/重庆）的 colleges.city 存的是区名，统一折叠为市名
@@ -569,9 +569,12 @@ async def list_cities(region: str | None = None):
         " WHERE city IS NOT NULL AND city != ''"
     )
     params: list[str] = []
-    if region:
-        sql += " AND region=?"
-        params.append(region)
+    if regions:
+        region_list = [r.strip() for r in regions.split(",") if r.strip()]
+        if region_list:
+            placeholders = ",".join("?" * len(region_list))
+            sql += f" AND region IN ({placeholders})"
+            params.extend(region_list)
     sql += " ORDER BY region, city"
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     conn.close()

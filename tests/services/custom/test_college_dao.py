@@ -24,6 +24,29 @@ def test_search_colleges_by_province(custom_db: None) -> None:
     assert "广东工业大学" in names
 
 
+def test_search_colleges_single_region(custom_db: None) -> None:
+    results = search_colleges(regions=["华北"])
+    assert len(results) == 2
+    names = [r["name"] for r in results]
+    assert "清华大学" in names
+    assert "北京大学" in names
+
+
+def test_search_colleges_multiple_regions(custom_db: None) -> None:
+    results = search_colleges(regions=["华北", "华南"])
+    assert len(results) == 5
+    for r in results:
+        assert r["region"] in {"华北", "华南"}
+
+
+def test_search_colleges_region_combined_with_province(custom_db: None) -> None:
+    results = search_colleges(regions=["华南"], province="广东")
+    assert len(results) == 3
+    for r in results:
+        assert r["region"] == "华南"
+        assert r["province"] == "广东"
+
+
 def test_search_colleges_by_level(custom_db: None) -> None:
     results = search_colleges(level="985+211+双一流")
     assert len(results) == 3

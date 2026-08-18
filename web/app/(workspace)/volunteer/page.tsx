@@ -172,7 +172,7 @@ export default function VolunteerPage() {
   const [majorCategories, setMajorCategories] = useState<string[]>([]);
   const [strategies, setStrategies] = useState<string[]>(["default"]);
   const [cityTier, setCityTier] = useState("");
-  const [region, setRegion] = useState("");
+  const [selectedRegions, setSelectedRegions] = useState<string[]>([]);
   const [allCities, setAllCities] = useState<{city: string; province: string; region: string}[]>([]);
   const [selectedCities, setSelectedCities] = useState<string[]>([]);
   const [convertedRank, setConvertedRank] = useState<number | null>(null);
@@ -198,12 +198,18 @@ export default function VolunteerPage() {
       .then((r) => r.ok ? r.json() : { categories: [] })
       .then((data) => setAllCategories(data.categories || []))
       .catch(() => {});
-    fetch("/api/v1/volunteer/cities")
+    loadSavedPlans();
+  }, []);
+
+  useEffect(() => {
+    const url = selectedRegions.length > 0
+      ? `/api/v1/volunteer/cities?regions=${encodeURIComponent(selectedRegions.join(","))}`
+      : "/api/v1/volunteer/cities";
+    fetch(url)
       .then((r) => r.ok ? r.json() : { cities: [] })
       .then((data) => setAllCities(data.cities || []))
       .catch(() => {});
-    loadSavedPlans();
-  }, []);
+  }, [selectedRegions]);
 
   const convertScoreToRank = useCallback(async (s: string) => {
     if (!s || !examCategory) { setConvertedRank(null); return; }
@@ -392,7 +398,7 @@ export default function VolunteerPage() {
           strategies: strategies.length > 0 ? strategies : ["default"],
           major_categories: majorCategories.length > 0 ? majorCategories : null,
           ...(cityTier ? { city_tier: cityTier } : {}),
-          ...(region ? { region: region } : {}),
+          ...(selectedRegions.length > 0 ? { regions: selectedRegions } : {}),
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           ...(effectiveScoreRange ? { score_min: effectiveScoreRange[0], score_max: effectiveScoreRange[1] } : {}),
           batch,
@@ -444,7 +450,7 @@ export default function VolunteerPage() {
     } finally {
       setLoading(false);
     }
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, region, selectedCities, scoreRange]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange]);
 
   const toggleMajor = useCallback((groupKey: string, majorId: string) => {
     setCheckedMajors((prev) => {
@@ -532,7 +538,7 @@ export default function VolunteerPage() {
           strategies: strategies.length > 0 ? strategies : ["default"],
           major_categories: majorCategories.length > 0 ? majorCategories : null,
           ...(cityTier ? { city_tier: cityTier } : {}),
-          ...(region ? { region: region } : {}),
+          ...(selectedRegions.length > 0 ? { regions: selectedRegions } : {}),
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           score: score ? parseInt(score) : null,
           batch,
@@ -545,7 +551,7 @@ export default function VolunteerPage() {
       setPlanMsg(e instanceof Error ? e.message : "请求失败");
     }
     setPlanLoading(false);
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, region, selectedCities]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities]);
 
   const handleRangeChange = useCallback((minScore: number, maxScore: number) => {
     setScoreRange([minScore, maxScore]);
@@ -928,8 +934,10 @@ export default function VolunteerPage() {
                 <label key={r} className="flex items-center gap-1 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={region === r}
-                    onChange={() => setRegion(prev => prev === r ? "" : r)}
+                    checked={selectedRegions.includes(r)}
+                    onChange={() => setSelectedRegions(prev =>
+                      prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r]
+                    )}
                     className="accent-blue-600"
                   />
                   <span className="text-sm">{r}</span>

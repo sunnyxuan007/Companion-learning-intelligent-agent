@@ -35,17 +35,17 @@ def custom_db(tmp_path: Path):
 
 def _seed(conn: Any) -> None:
     colleges = [
-        ("C001", "清华大学", "北京", "北京", "综合", "985+211+双一流", 1, None, 9.0, 9.0, 3.0, 0.98, 25000),
-        ("C002", "北京大学", "北京", "北京", "综合", "985+211+双一流", 1, None, 8.5, 9.5, 3.5, 0.97, 24000),
-        ("C003", "深圳大学", "广东", "深圳", "综合", "普通", 1, None, 7.0, 8.5, 5.0, 0.90, 18000),
-        ("C004", "华南理工大学", "广东", "广州", "理工", "985+211+双一流", 1, None, 7.5, 7.5, 4.0, 0.95, 20000),
-        ("C005", "广东工业大学", "广东", "广州", "理工", "普通", 1, None, 6.0, 6.5, 6.0, 0.88, 15000),
+        ("C001", "清华大学", "北京", "北京", "综合", "985+211+双一流", 1, None, 9.0, 9.0, 3.0, 0.98, 25000, "华北"),
+        ("C002", "北京大学", "北京", "北京", "综合", "985+211+双一流", 1, None, 8.5, 9.5, 3.5, 0.97, 24000, "华北"),
+        ("C003", "深圳大学", "广东", "深圳", "综合", "普通", 1, None, 7.0, 8.5, 5.0, 0.90, 18000, "华南"),
+        ("C004", "华南理工大学", "广东", "广州", "理工", "985+211+双一流", 1, None, 7.5, 7.5, 4.0, 0.95, 20000, "华南"),
+        ("C005", "广东工业大学", "广东", "广州", "理工", "普通", 1, None, 6.0, 6.5, 6.0, 0.88, 15000, "华南"),
     ]
     for c in colleges:
         conn.execute(
             """INSERT INTO colleges (id, name, province, city, type, level, is_public, tags,
-               dorm_score, city_vitality, cost_index, employment_rate, avg_salary, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, strftime('%s','now'), strftime('%s','now'))""",
+               dorm_score, city_vitality, cost_index, employment_rate, avg_salary, region, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, strftime('%s','now'), strftime('%s','now'))""",
             c,
         )
 

@@ -44,7 +44,7 @@ class CreatePlanRequest(BaseModel):
     major_categories: list[str] | None = None
     score_rank_range: tuple[int, int] | None = None
     city_tier: str | None = None
-    region: str | None = None
+    regions: list[str] | None = None
     cities: list[str] | None = None
     batch: str = "本科批"
 
@@ -82,7 +82,7 @@ async def create_plan(body: CreatePlanRequest):
 
     colleges = search_colleges(
         college_ids=ids, limit=2000,
-        city_tier=body.city_tier, region=body.region, cities=body.cities,
+        city_tier=body.city_tier, regions=body.regions, cities=body.cities,
     )
     if not colleges:
         raise HTTPException(status_code=400, detail="No colleges found for given province")
