@@ -1542,6 +1542,54 @@ L3 memory (profile.md / preferences.md)
 | `data/user/custom/ocr_guide/guide_ranks_pilot.json` | 4654 条试点记录（新建） |
 | `data/user/custom/ocr_guide/guide_ranks_report.md` | 验证报告（新建） |
 
+### Phase 21 🚀 中央部署 SaaS 化（2026-08-18 规划，待与同学商议）
+
+> 状态：方案已定，**未实施**。待团队确认后执行。
+
+#### 目标
+
+从"本机自用"升级为**中央部署的 SaaS 网站**：
+- 任何人可自助注册账号登录使用（内置多用户认证，首注册者为 admin）
+- API 由部署方统一托管，用户仅用浏览器访问，无需本地安装
+- 每个用户的学习记录/志愿表/权重/收藏等数据相互隔离
+
+#### 现状调研结论
+
+| 维度 | 现状 | 结论 |
+|------|------|------|
+| 认证 | 内置多用户 JWT（auth.json，默认关闭） | ✓ 支持，开启即可 |
+| 部署 | Docker（compose.yaml / docker-compose.yml）+ 裸机两种 | 裸机可行（磁盘仅剩 2.7G） |
+| 公网 | 本机 IP 113.105.235.136（疑似运营商 NAT/封端口） | 用 Cloudflare Tunnel 穿透 + HTTPS |
+| 数据隔离（chat/ws） | `get_current_user().id` 正确隔离 | ✓ 已支持 |
+| **数据隔离（志愿模块）** | **`user_id` 是路径参数默认 "default"，前端硬编码 `USER_ID="default"`** | ✗ **所有用户共享同一份数据，必须改造** |
+
+#### 实施计划
+
+**阶段 1 — 多用户数据隔离改造（核心代码改动）**
+- 后端：`volunteer.py` + `volunteer_table.py` 的 `user_id` 路径参数改为从 `get_current_user().id` 提取，保留向后兼容、杜绝越权；同步检查 `volunteer_chat` / study summary/gap / weights auto-tune
+- 前端：`volunteer/page.tsx` + `study-lab/page.tsx` 的 `USER_ID="default"` 改为 `useAuthStatus()` 动态取
+- 验证：注册 A/B 两用户，互相看不到对方数据
+
+**阶段 2 — 部署上线**
+1. 依赖修复：`sqlite-vec` 加入 `requirements/server.txt` + `pyproject.toml`（`rag/store.py` 硬依赖）
+2. 启用认证：`auth.json` `enabled=true` + 清空单用户字段 + `cookie_secure=true`
+3. 密钥保护：`model_catalog.json` 明文 DeepSeek/Aliyun key 改环境变量注入 + `chmod 600`
+4. 数据备份：`deeptutor_custom.db`
+5. 生产构建：web `npm run build` + systemd 守护后端(8001)/前端(3782)
+6. Cloudflare Tunnel：cloudflared 建隧道，ingress → 3782，公网 HTTPS
+7. 端到端验收
+
+**现实约束（需团队知晓）**
+- 共享 API key 成本：所有用户共用一个 DeepSeek key（部署方付费），需监控用量，后续可做 BYOK
+- 磁盘：本机仅剩 2.7G，裸机方案不构建镜像够用
+
+#### 待团队确认项
+
+- [ ] 部署形态：本机裸机 + Cloudflare Tunnel vs 云服务器（~¥50-100/月）
+- [ ] 认证：开放注册 or 邀请制/审核制
+- [ ] API 计费：部署方统一付费 or 用户自带 key（BYOK）
+- [ ] 志愿模块数据隔离改造是否本轮做（不做则多用户无意义）
+
 ## 使用方式
 
 ```bash
