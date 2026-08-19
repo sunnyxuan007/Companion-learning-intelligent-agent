@@ -94,6 +94,7 @@ class RecommendResponse(BaseModel):
     tiers: dict[str, list[dict]]
     total_count: int
     violations: list[dict] = []
+    data_status: str | None = None
 
 
 class RecommendRequest(BaseModel):
@@ -227,6 +228,9 @@ class BrowseRequest(BaseModel):
     regions: list[str] | None = None
     cities: list[str] | None = None
     batch: str = "本科批"
+    art_category: str | None = None
+    culture_score: int | None = None
+    major_score: int | None = None
 
 
 @router.post("/volunteer/browse", response_model=RecommendResponse)
@@ -235,6 +239,7 @@ async def browse_recommendations(body: BrowseRequest):
     from deeptutor.services.custom.volunteer_scorer import generate_group_recommendations
     from deeptutor.services.custom.db import get_connection
     from deeptutor.services.custom.user_settings_dao import get_user_weights
+    from deeptutor.services.custom.art_sports import is_art_sports, calc_composite_score
 
     conn = get_connection()
     ids = [
@@ -268,6 +273,10 @@ async def browse_recommendations(body: BrowseRequest):
         "exam_category": body.exam_category,
         "score": body.score,
     }
+    if is_art_sports(body.exam_category) and body.culture_score and body.major_score:
+        cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
+        if not cs.get("errors"):
+            profile["composite_score"] = cs["score"]
 
     # Build score_rank_range if score_min/score_max provided
     score_rank_range = None
@@ -291,6 +300,7 @@ async def browse_recommendations(body: BrowseRequest):
         per_tier_caps=PER_TIER_CAPS_DEFAULT,
         score_rank_range=score_rank_range,
         batch=body.batch,
+        art_category=body.art_category,
     )
 
     # 广东招生代码（按省份）：official_code -> province_code
@@ -338,7 +348,34 @@ async def browse_recommendations(body: BrowseRequest):
         ]
 
     total = sum(len(v) for v in tiers_out.values())
-    return RecommendResponse(tiers=tiers_out, total_count=total)
+    resp = RecommendResponse(tiers=tiers_out, total_count=total)
+    if is_art_sports(body.exam_category):
+        resp.data_status = result.get("data_status", "ok")
+    return resp
+
+
+class CompositeScoreRequest(BaseModel):
+    art_category: str = "美术与设计"
+    culture_score: int | None = None
+    major_score: int | None = None
+    bonus_points: int = 0
+
+
+@router.get("/volunteer/art-sports/categories")
+async def art_sports_categories():
+    from deeptutor.services.custom.art_sports import ART_CATEGORIES, ART_SPORTS_RULES
+
+    return {"categories": ART_CATEGORIES, "rules": ART_SPORTS_RULES}
+
+
+@router.post("/volunteer/art-sports/composite-score")
+async def composite_score(body: CompositeScoreRequest):
+    from deeptutor.services.custom.art_sports import calc_composite_score
+
+    result = calc_composite_score(body.art_category, body.culture_score, body.major_score, body.bonus_points)
+    if result.get("errors"):
+        raise HTTPException(status_code=400, detail="; ".join(result["errors"]))
+    return result
 
 
 class AdmissionHistoryItem(BaseModel):

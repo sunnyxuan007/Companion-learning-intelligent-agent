@@ -58,6 +58,9 @@ class CreatePlanRequest(BaseModel):
     regions: list[str] | None = None
     cities: list[str] | None = None
     batch: str = "本科批"
+    art_category: str | None = None
+    culture_score: int | None = None
+    major_score: int | None = None
 
 
 class UpdateSlotsRequest(BaseModel):
@@ -77,6 +80,18 @@ async def create_plan(body: CreatePlanRequest):
     from deeptutor.services.custom.volunteer_scorer import generate_group_recommendations
     from deeptutor.services.custom.volunteer_table_dao import create_plan as dao_create
     from deeptutor.services.custom.user_settings_dao import get_user_weights
+    from deeptutor.services.custom.art_sports import is_art_sports, ART_SPORTS_RULES
+
+    is_art = is_art_sports(body.exam_category)
+    if is_art:
+        # 艺体类：本科批用官方 20 组规则；不按普通类批次名，统一"艺体类本科批"
+        body.batch = "艺体类本科批"
+        art_rules = ART_SPORTS_RULES["本科批"]
+        rules = {
+            "groups": art_rules["groups"],
+            "mode": art_rules["mode"],
+            "ratio": art_rules["ratio"],
+        }
 
     conn = get_connection()
     ids = [
@@ -119,11 +134,22 @@ async def create_plan(body: CreatePlanRequest):
             major_categories=body.major_categories,
             score_rank_range=body.score_rank_range,
             batch=body.batch,
+            art_category=body.art_category,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成推荐失败: {str(e)}")
 
-    rules = PROVINCE_RULES.get(body.province, PROVINCE_RULES["default"])
+    if is_art and rec_result.get("data_status") == "no_data":
+        raise HTTPException(status_code=400, detail=rec_result.get("message", "艺体类投档数据待补充"))
+
+    if is_art:
+        from deeptutor.services.custom.art_sports import calc_composite_score
+        cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
+        if cs.get("errors"):
+            raise HTTPException(status_code=400, detail="; ".join(cs["errors"]))
+
+    if not is_art:
+        rules = PROVINCE_RULES.get(body.province, PROVINCE_RULES["default"])
     ratio = rules["ratio"]
     total_groups = rules["groups"]
 
@@ -188,7 +214,8 @@ async def create_plan(body: CreatePlanRequest):
         for item in pool[:count]:
             college = item["college"]
             majors = []
-            for m in item["majors"]:
+            max_majors = 6 if is_art else len(item["majors"])
+            for m in item["majors"][:max_majors]:
                 mid = m["major_id"]
                 majors.append({
                     "major_id": mid,

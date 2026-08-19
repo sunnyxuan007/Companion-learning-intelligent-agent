@@ -125,7 +125,8 @@ def init_db() -> None:
         exam_category TEXT DEFAULT '',
         group_code TEXT DEFAULT '',
         rank_source TEXT DEFAULT 'official',
-        PRIMARY KEY (college_id, major_id, province, year, exam_category, group_code)
+        art_category TEXT DEFAULT '',
+        PRIMARY KEY (college_id, major_id, province, year, exam_category, group_code, art_category)
     );
     CREATE INDEX IF NOT EXISTS idx_admission_ranks_college ON admission_ranks(college_id);
     CREATE INDEX IF NOT EXISTS idx_admission_ranks_province ON admission_ranks(province);
@@ -277,6 +278,45 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(admission_ranks)").fetchall()]
         if "rank_source" not in cols:
             conn.execute("ALTER TABLE admission_ranks ADD COLUMN rank_source TEXT DEFAULT 'official'")
+    except Exception:
+        pass
+    # Migration: add art_category (艺体类 8 类计划类别) to admission_ranks
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(admission_ranks)").fetchall()]
+        if "art_category" not in cols:
+            conn.execute("ALTER TABLE admission_ranks ADD COLUMN art_category TEXT DEFAULT ''")
+    except Exception:
+        pass
+    # Migration: admission_ranks PK 纳入 art_category（艺体类同校同组跨类别共存）
+    try:
+        pk_cols = [r["name"] for r in conn.execute("PRAGMA table_info(admission_ranks)").fetchall() if r["pk"]]
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(admission_ranks)").fetchall()]
+        if pk_cols and "art_category" not in pk_cols:
+            conn.executescript("""
+                ALTER TABLE admission_ranks RENAME TO admission_ranks_old;
+                CREATE TABLE admission_ranks (
+                    college_id TEXT NOT NULL REFERENCES colleges(id),
+                    major_id TEXT NOT NULL,
+                    province TEXT NOT NULL,
+                    year INTEGER NOT NULL,
+                    batch TEXT,
+                    min_rank INTEGER DEFAULT 0,
+                    min_score REAL DEFAULT 0,
+                    enrollment_count INTEGER DEFAULT 0,
+                    exam_category TEXT DEFAULT '',
+                    group_code TEXT DEFAULT '',
+                    rank_source TEXT DEFAULT 'official',
+                    art_category TEXT DEFAULT '',
+                    PRIMARY KEY (college_id, major_id, province, year, exam_category, group_code, art_category)
+                );
+                INSERT INTO admission_ranks
+                    (college_id, major_id, province, year, batch, min_rank, min_score, enrollment_count, exam_category, group_code, rank_source, art_category)
+                    SELECT college_id, major_id, province, year, batch, min_rank, min_score, enrollment_count, exam_category, group_code, rank_source, art_category
+                    FROM admission_ranks_old;
+                CREATE INDEX idx_admission_ranks_college ON admission_ranks(college_id);
+                CREATE INDEX idx_admission_ranks_province ON admission_ranks(province);
+                DROP TABLE admission_ranks_old;
+            """)
     except Exception:
         pass
     # Migration: add subject_requirement / metadata / timestamps to college_majors

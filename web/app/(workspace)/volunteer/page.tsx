@@ -224,6 +224,11 @@ export default function VolunteerPage() {
   const [checkedMajors, setCheckedMajors] = useState<Record<string, string[]>>({});
   const [scoreRange, setScoreRange] = useState<[number, number] | null>(null);
   const [showDist, setShowDist] = useState(false);
+  const [artCategory, setArtCategory] = useState("美术与设计");
+  const [cultureScore, setCultureScore] = useState("");
+  const [majorScore, setMajorScore] = useState("");
+  const [artComposite, setArtComposite] = useState<number | null>(null);
+  const [artCategories, setArtCategories] = useState<{ code: string; name: string; formula: string }[]>([]);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
   const rangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -240,6 +245,10 @@ export default function VolunteerPage() {
     fetch("/api/v1/volunteer/major-categories")
       .then((r) => r.ok ? r.json() : { categories: [] })
       .then((data) => setAllCategories(data.categories || []))
+      .catch(() => {});
+    fetch("/api/v1/volunteer/art-sports/categories")
+      .then((r) => r.ok ? r.json() : { categories: [] })
+      .then((data) => setArtCategories(data.categories || []))
       .catch(() => {});
     loadSavedPlans();
   }, []);
@@ -279,6 +288,28 @@ export default function VolunteerPage() {
       prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
     );
   };
+
+  useEffect(() => {
+    if (examCategory !== "艺体类" || !cultureScore || !majorScore) {
+      setArtComposite(null);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/v1/volunteer/art-sports/composite-score", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        art_category: artCategory,
+        culture_score: parseInt(cultureScore),
+        major_score: parseInt(majorScore),
+        bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
+      }),
+    })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((data) => { if (!cancelled) setArtComposite(data.score); })
+      .catch(() => { if (!cancelled) setArtComposite(null); });
+    return () => { cancelled = true; };
+  }, [examCategory, artCategory, cultureScore, majorScore, bonusPoints]);
 
   const loadSavedPlans = useCallback(async () => {
     try {
@@ -521,6 +552,11 @@ export default function VolunteerPage() {
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           ...(effectiveScoreRange ? { score_min: effectiveScoreRange[0], score_max: effectiveScoreRange[1] } : {}),
           batch,
+          ...(examCategory === "艺体类" ? {
+            art_category: artCategory,
+            culture_score: cultureScore ? parseInt(cultureScore) : null,
+            major_score: majorScore ? parseInt(majorScore) : null,
+          } : {}),
         }),
       });
       if (!res.ok) {
@@ -550,7 +586,11 @@ export default function VolunteerPage() {
         }
       }
       if (allItems.length === 0) {
-        setRecommendMsg("未找到匹配的院校专业组，请调整筛选条件");
+        if (examCategory === "艺体类" && data.data_status === "no_data") {
+          setRecommendMsg("艺体类投档数据待补充，暂无可推荐院校专业组（框架已就绪）");
+        } else {
+          setRecommendMsg("未找到匹配的院校专业组，请调整筛选条件");
+        }
         return;
       }
       setBrowseGroups(allItems);
@@ -569,7 +609,7 @@ export default function VolunteerPage() {
     } finally {
       setLoading(false);
     }
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange, artCategory, cultureScore, majorScore]);
 
   const toggleMajor = useCallback((groupKey: string, majorId: string) => {
     setCheckedMajors((prev) => {
@@ -625,6 +665,11 @@ export default function VolunteerPage() {
             strategies: strategies.length > 0 ? strategies : ["default"],
             score: score ? parseInt(score) : null,
             batch,
+            ...(examCategory === "艺体类" ? {
+              art_category: artCategory,
+              culture_score: cultureScore ? parseInt(cultureScore) : null,
+              major_score: majorScore ? parseInt(majorScore) : null,
+            } : {}),
           }),
         });
         if (res.ok) {
@@ -639,7 +684,7 @@ export default function VolunteerPage() {
         }
       } catch { /* ignore */ }
     }
-  }, [plan, province, examCategory, batch, rank, level, strategies]);
+  }, [plan, province, examCategory, batch, rank, level, strategies, artCategory, cultureScore, majorScore, score]);
 
   const createFullPlan = useCallback(async () => {
     if (!rank) { setPlanMsg("请先输入位次"); return; }
@@ -663,6 +708,11 @@ export default function VolunteerPage() {
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           score: score ? parseInt(score) : null,
           batch,
+          ...(examCategory === "艺体类" ? {
+            art_category: artCategory,
+            culture_score: cultureScore ? parseInt(cultureScore) : null,
+            major_score: majorScore ? parseInt(majorScore) : null,
+          } : {}),
         }),
       });
       if (!res.ok) throw new Error((await res.json()).detail || "生成失败");
@@ -672,7 +722,7 @@ export default function VolunteerPage() {
       setPlanMsg(e instanceof Error ? e.message : "请求失败");
     }
     setPlanLoading(false);
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, artCategory, cultureScore, majorScore]);
 
   const handleRangeChange = useCallback((minScore: number, maxScore: number) => {
     setScoreRange([minScore, maxScore]);
@@ -895,8 +945,72 @@ export default function VolunteerPage() {
                 />
                 <span className="text-sm">历史类</span>
               </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="examCategory"
+                  value="艺体类"
+                  checked={examCategory === "艺体类"}
+                  onChange={(e) => setExamCategory(e.target.value)}
+                  className="accent-purple-600"
+                />
+                <span className="text-sm text-purple-700">艺体类</span>
+              </label>
             </div>
           </div>
+          {examCategory === "艺体类" && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">专业类别</label>
+                <select
+                  value={artCategory}
+                  onChange={(e) => setArtCategory(e.target.value)}
+                  className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
+                >
+                  {artCategories.length > 0
+                    ? artCategories.map((c) => (
+                        <option key={c.code} value={c.code}>{c.name}</option>
+                      ))
+                    : (
+                        ["音乐", "舞蹈", "表（导）演", "播音与主持", "美术与设计", "书法", "戏曲", "体育"].map((c) => (
+                          <option key={c} value={c}>{c === "美术与设计" ? "美术与设计类" : c === "播音与主持" ? "播音与主持类" : c === "表（导）演" ? "表（导）演类" : `${c}类`}</option>
+                        ))
+                    )}
+                </select>
+                <p className="mt-1 text-xs text-purple-600">
+                  艺体类不分物理/历史，按专业类别统一划线、一起投档
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">文化课分数</label>
+                <input
+                  type="number"
+                  value={cultureScore}
+                  onChange={(e) => setCultureScore(e.target.value)}
+                  placeholder="0-750"
+                  className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">专业省统考分</label>
+                <input
+                  type="number"
+                  value={majorScore}
+                  onChange={(e) => setMajorScore(e.target.value)}
+                  placeholder="0-300"
+                  className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
+                />
+                {artComposite !== null && (
+                  <p className="mt-1 text-sm font-medium text-purple-700">
+                    综合分 ≈ {artComposite.toFixed(1)}
+                  </p>
+                )}
+                <p className="mt-1 text-xs text-gray-500">
+                  双上线：文化与专业省统考须同时达省控线方可投档
+                </p>
+              </div>
+            </>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700">招生批次</label>
             <select
@@ -905,6 +1019,9 @@ export default function VolunteerPage() {
               className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
             >
               <option value="本科批">本科批（普通类）</option>
+              {examCategory === "艺体类" && (
+                <option value="艺体类本科批">本科批（艺体类）</option>
+              )}
               <option value="提前批本科-军检类">提前批·军检类</option>
               <option value="提前批本科-非军检类">提前批·非军检类</option>
               <option value="提前批本科-卫生专项">提前批·卫生专项</option>
@@ -912,7 +1029,12 @@ export default function VolunteerPage() {
               <option value="提前批本科-特殊类型招生">提前批·特殊类型招生</option>
               <option value="提前批本科-空军海军招飞">提前批·空军海军招飞</option>
             </select>
-            {batch !== "本科批" && (
+            {batch === "艺体类本科批" && (
+              <p className="mt-1 text-xs text-purple-600">
+                艺体类本科批：1 个平行志愿组共 20 个院校专业组 · 每组最多 6 个专业 · 不得兼报普通类
+              </p>
+            )}
+            {batch !== "本科批" && batch !== "艺体类本科批" && (
               <p className="mt-1 text-xs text-amber-600">
                 提前批：军检/卫生/教师等专项有特定报考条件与就业限制，请仔细核对招生章程
               </p>
@@ -921,7 +1043,9 @@ export default function VolunteerPage() {
           <div>
             <label className="block text-sm font-medium text-gray-700">再选科目</label>
             <div className="mt-1 flex flex-wrap gap-2">
-              {["化学", "生物", "地理", "政治"].map((subj) => (
+              {examCategory === "艺体类" ? (
+                <span className="text-xs text-gray-400">艺体类不分物理/历史，无再选科目要求</span>
+              ) : (["化学", "生物", "地理", "政治"].map((subj) => (
                 <label key={subj} className="flex items-center gap-1 cursor-pointer">
                   <input
                     type="checkbox"
@@ -931,7 +1055,7 @@ export default function VolunteerPage() {
                   />
                   <span className="text-sm">{subj}</span>
                 </label>
-              ))}
+              )))}
             </div>
           </div>
           <div>

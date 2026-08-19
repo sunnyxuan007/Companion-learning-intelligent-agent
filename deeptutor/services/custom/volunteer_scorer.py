@@ -620,12 +620,19 @@ def generate_group_recommendations(
     score_rank_range: tuple[int, int] | None = None,
     per_tier_caps: dict[str, int] | None = None,
     batch: str = "本科批",
+    art_category: str | None = None,
 ) -> dict[str, Any]:
     from deeptutor.services.custom.db import get_connection
     from deeptutor.services.custom.admission_dao import score_to_rank_latest
+    from deeptutor.services.custom.art_sports import is_art_sports, art_keywords
 
     user_profile = user_profile or {}
     user_rank = user_profile.get("rank", 0) or 0
+    is_art = is_art_sports(exam_category)
+    art_kw = art_keywords(art_category) if (is_art and art_category) else []
+    art_filter_sql = ""
+    if is_art and art_category:
+        art_filter_sql = "AND art_category = ? "
 
     if "_subjects" not in user_profile:
         try:
@@ -663,9 +670,10 @@ def generate_group_recommendations(
            FROM admission_ranks ar
            WHERE province=? AND exam_category=? AND group_code!='' AND min_rank > 0
              AND (year < 2026 OR batch = ?)
+             {art_filter_sql}
            GROUP BY college_id, group_code, year
            ORDER BY college_id, group_code, year DESC""",
-        (province, exam_category, batch),
+        (province, exam_category, batch) + ((art_category,) if art_filter_sql else ()),
     ).fetchall()
 
     major_ranks = conn.execute(
@@ -679,19 +687,21 @@ def generate_group_recommendations(
            LEFT JOIN college_major_name cmn ON ar.college_id = cmn.college_id AND ar.major_id = cmn.major_id
            WHERE ar.province=? AND ar.exam_category=? AND ar.group_code!='' AND ar.major_id!='GEN'
              AND (ar.year < 2026 OR ar.batch = ?)
+             {art_filter_sql}
            GROUP BY ar.college_id, ar.group_code, ar.major_id
            ORDER BY ar.college_id, ar.group_code, ar.major_id""",
-        (province, exam_category, batch),
+        (province, exam_category, batch) + ((art_category,) if art_filter_sql else ()),
     ).fetchall()
         # 预取捡漏分：一次查询全部 college 的年度最低位次，填充 _bargain_cache
     _prefetch_year_ranks: dict[tuple, dict[int, int]] = {}
     for r in conn.execute(
-        """SELECT college_id, year, MIN(min_rank) as best_rank
+        f"""SELECT college_id, year, MIN(min_rank) as best_rank
            FROM admission_ranks
            WHERE province=? AND exam_category=? AND min_rank > 0
              AND (year < 2026 OR batch = ?)
+             {art_filter_sql}
            GROUP BY college_id, year""",
-        (province, exam_category, batch),
+        (province, exam_category, batch) + ((art_category,) if art_filter_sql else ()),
     ).fetchall():
         bkey = (r["college_id"], province, exam_category)
         _prefetch_year_ranks.setdefault(bkey, {})[int(r["year"])] = int(r["best_rank"])
@@ -700,10 +710,11 @@ def generate_group_recommendations(
     # 组级位次来源（2026 GEN 行）：official=官方投档位次 / estimated=预估位次
     group_rank_source: dict[tuple[str, str], str] = {}
     for r in conn.execute(
-        """SELECT college_id, group_code, rank_source
+        f"""SELECT college_id, group_code, rank_source
            FROM admission_ranks
-           WHERE province=? AND exam_category=? AND major_id='GEN' AND year=? AND min_rank > 0 AND batch=?""",
-        (province, exam_category, 2026, batch),
+           WHERE province=? AND exam_category=? AND major_id='GEN' AND year=? AND min_rank > 0 AND batch=?
+             {art_filter_sql}""",
+        (province, exam_category, 2026, batch) + ((art_category,) if art_filter_sql else ()),
     ).fetchall():
         group_rank_source[(r["college_id"], r["group_code"])] = r["rank_source"] or "official"
     conn.close()
@@ -727,6 +738,8 @@ def generate_group_recommendations(
         mid = r["major_id"]
         if major_category_ids and mid not in major_category_ids:
             continue
+        if art_kw and not any(k in (r["major_name"] or "") for k in art_kw):
+            continue
         rk = int(r["best_rank"] or 0)
         majors_per_group[key].append({
             "major_id": mid,
@@ -745,6 +758,23 @@ def generate_group_recommendations(
             if any(m["major_id"] in major_category_ids for m in majors_per_group.get((cid, gc), []))
         }
         group_agg = {k: v for k, v in group_agg.items() if k in valid_groups}
+
+    if is_art:
+        # 艺体类：按专业类别过滤后，无投档数据 → 返回明确提示，不报错
+        if art_kw:
+            valid_groups = {
+                (cid, gc) for (cid, gc) in valid_groups
+                if not majors_per_group.get((cid, gc))
+                or any(any(k in (m.get("major_name") or "") for k in art_kw) for m in majors_per_group.get((cid, gc), []))
+            }
+            group_agg = {k: v for k, v in group_agg.items() if k in valid_groups}
+        if not group_agg:
+            return {
+                "tiers": {"safe": [], "steady": [], "reach": []},
+                "total": 0,
+                "data_status": "no_data",
+                "message": "艺体类投档数据待补充，暂无可推荐院校专业组",
+            }
 
     all_groups: list[dict[str, Any]] = []
     for (cid, gc), group_ranks in group_agg.items():
@@ -802,6 +832,13 @@ def generate_group_recommendations(
             "steady": steady[:per_tier_caps.get("steady", 100)],
             "reach": reach[:per_tier_caps.get("reach", 50)],
         }
+    elif is_art:
+        # 艺体类本科批：20 个院校专业组，ratio [3,4,3] → 6 冲 / 8 稳 / 6 保
+        selected = {
+            "safe": safe[:6],
+            "steady": steady[:8],
+            "reach": reach[:6],
+        }
     else:
         per_tier = max(1, top_n // 3)
         selected = {
@@ -810,4 +847,7 @@ def generate_group_recommendations(
             "reach": reach[:per_tier],
         }
 
-    return {"tiers": selected, "total": len(all_groups)}
+    result = {"tiers": selected, "total": len(all_groups)}
+    if is_art:
+        result["data_status"] = "ok"
+    return result

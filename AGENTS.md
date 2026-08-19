@@ -133,6 +133,13 @@ ruff check . && ruff format --check .     # 检查格式
 | `deeptutor/services/custom/volunteer_scorer.py` | `_resolve_strategy_weights` 支持 `list[str]` 多选融合 | 2026-07-28 |
 | `scripts/seed_region_data.py` | city_tier + region 数据回填脚本（4588 所） | 2026-07-28 |
 | `web/app/(workspace)/volunteer/page.tsx` | 地域选择/策略多选/城市多选/分数分布图/保存/历史方案管理 | 2026-07-28 |
+| `deeptutor/services/custom/art_sports.py` | 艺体类填报框架：8 类类别 + 综合分公式 + 本科批 20 组规则（新建） | 2026-08-19 |
+| `deeptutor/services/custom/volunteer_scorer.py` | `generate_group_recommendations` 艺体类分支（cap 20 / no_data 提示 / art_category 列过滤） | 2026-08-19 |
+| `deeptutor/services/custom/db.py` | `admission_ranks` 加 `art_category` 列 + PK 重建迁移纳入 art_category | 2026-08-19 |
+| `deeptutor/api/routers/volunteer.py` | Browse/Recommend 加 art 字段 + `data_status` + art-sports 元数据端点 | 2026-08-19 |
+| `deeptutor/api/routers/volunteer_table.py` | 艺体类建表：batch 强制艺体类本科批 / cap 20 / 每组 6 专业 / 综合分校验 | 2026-08-19 |
+| `web/app/(workspace)/volunteer/page.tsx` | 选考科目加"艺体类"radio + 专业类别/综合分表单 + 艺体类批次联动 | 2026-08-19 |
+| `tests/services/custom/test_art_sports.py` | 艺体类框架测试（综合分公式/类别/no_data/20 组 cap）（新建） | 2026-08-19 |
 
 ### 新增文件
 
@@ -162,6 +169,8 @@ ruff check . && ruff format --check .     # 检查格式
 | `deeptutor/services/custom/holland_assessment.py` | 霍兰德 RIASEC 测评 |
 | `web/components/volunteer/AdmissionCountdown.tsx` | 录取日程倒计时组件 |
 | `scripts/seed_rag_from_db.py` | RAG 种子脚本（新建）——从 DB 生成 FAQ/院校/专业/录取数据灌入向量库，2667 条 |
+| `deeptutor/services/custom/art_sports.py` | 艺体类填报框架（8 类类别 + 综合分公式 + 本科批 20 组规则） |
+| `scripts/import_art_sports_2026.py` | 2026 艺体类本科投档导入器（7 附件 1347 组 + 新院校补库） |
 
 ## 架构图
 
@@ -1720,6 +1729,64 @@ L3 memory (profile.md / preferences.md)
 - **去重语义升级**：身份 = slots（保序）+ rank + exam_category。rank 不同视为不同方案（同份志愿不同位次场景可并存）
 - **年份切换策略**：2026 分段导入后评分引擎/换算默认 2026，无数据回退 2025（防御，正常不触发）
 - **2026 分段特点**：物理 max 699 / 历史 max 669，首行"（含以上）"已保留（对比 2025 版 max 697/672 是丢首行结果）
+
+### Phase 23 🚀 艺体类填报框架 + 2026 投档数据导入（2026-08-19 已实施）
+
+> 状态：框架 + 数据导入均已完成 ✅（220 passed + tsc 通过）。用户提供 2026 广东艺体类本科投档 7 个附件（附件3-9），已全部导入，推荐/浏览/建表可直接使用真实数据。
+
+#### 官方规则（2026 广东，用户提供）
+
+- **志愿设置**：1 个平行志愿组，共 **20 个院校专业组志愿**；每组内 **6 个专业志愿** + 1 个服从调剂
+- **划线**：不分物理/历史，按专业类别（音乐/美术/体育等）统一划线、一起投档录取
+- **投档**：分数优先、遵循志愿，按合成总分（含加分）排位；同分 7 项排序，艺体类比专业省统考
+- **综合分**（术科满分 300，综合分满分 750）：
+  - 音乐/舞蹈/表（导）演/美术与设计/书法/戏曲：总分 = 文化×50% + 术科×2.5×50%
+  - 播音与主持：总分 = 文化×60% + 术科×2.5×40%
+  - 体育：总分 = 文化×40% + 术科×2.5×60%
+- **双上线**：文化与专业省统考须同时达省控线方可投档
+- **不得兼报**：本科批艺体类不得兼报普通类
+
+#### 数据模型约定（已落地）
+
+- `exam_category = "艺体类"`（统一，不分物理/历史）+ 独立 `art_category` 字段（8 类）
+- `batch = "艺体类本科批"`（区别于普通类"本科批"）
+- 投档数据入 `admission_ranks`：`exam_category='艺体类'` + `batch='艺体类本科批'` + `group_code` 用投档表组号（纯数字，如 `201`）+ `art_category` 列记录类别 + `rank_source='official'`；组内专业行 major_id 用真实专业码（非 GEN）
+- `admission_ranks` 加 `art_category` 列（幂等 ALTER），**PK 纳入 art_category**（重建迁移：`college_id, major_id, province, year, exam_category, group_code, art_category`）——艺体类同校同组号跨类别共存，旧 PK 会被 INSERT OR REPLACE 吞并
+
+#### 改动文件
+
+| 文件 | 说明 |
+|------|------|
+| `deeptutor/services/custom/art_sports.py` | **新建**：`ART_CATEGORIES`（8 类）、`calc_composite_score`（三类公式 + 术科 300/文化 750 校验）、`ART_SPORTS_RULES`（本科批 20 组/6 专业/ratio [3,4,3]）、`is_art_sports`、`art_batch_for`、`ART_CATEGORY_KEYWORDS` |
+| `deeptutor/services/custom/volunteer_scorer.py` | `generate_group_recommendations` 加 `art_category` 参数；艺体类分支：SQL 按 `exam_category='艺体类'` + `art_category` **列**过滤（新增），专业名关键词过滤仅兜底（GEN-only 组保留）；无数据返回 `data_status:"no_data"` + message；有数据 cap=20（6 冲/8 稳/6 保） |
+| `deeptutor/services/custom/db.py` | `admission_ranks` 加 `art_category` 列（幂等 ALTER）+ PK 重建迁移纳入 art_category |
+| `deeptutor/api/routers/volunteer.py` | `BrowseRequest`/`RecommendRequest` 加 `art_category`/`culture_score`/`major_score`；`RecommendResponse` 加 `data_status`；新增 `GET /volunteer/art-sports/categories`、`POST /volunteer/art-sports/composite-score`；browse 艺体类时注入 composite_score 到 profile |
+| `deeptutor/api/routers/volunteer_table.py` | `CreatePlanRequest` 加 art 字段；艺体类建表：batch 强制 `艺体类本科批`、cap=20、每组 majors 截断 6、综合分校验；`data_status=no_data` 时 400 |
+| `web/app/(workspace)/volunteer/page.tsx` | 选考科目加"艺体类"radio；艺体类时显示专业类别下拉/文化分/专业统考分/实时综合分；批次加"本科批（艺体类）"选项 + 20 组规则提示；再选科目隐藏；browse/create 透传 art 字段；no_data 提示"艺体类投档数据待补充" |
+| `scripts/import_art_sports_2026.py` | **新建**：导入 7 个附件（体育 170/音乐 402/舞蹈 53/美术与设计 488/书法 30/播音与主持 98/表(导)演 106，共 1347 行）到 `admission_ranks`；地方码→官方码映射（college_code_map → id 尾码 → 新院校）；`VARIANT_MAP` 覆盖校区变体（19027 北师大珠海→`4111010027-ZH`）；缺失 3 所 2026 新设院校自动补 colleges 行 + map；幂等（重复跳过） |
+| `tests/services/custom/test_art_sports.py` | **新建**：综合分三类公式/边界/缺失、类别清单、无数据 no_data、有数据 20 组 cap 分配、art_category 列跨类别隔离（同校同组号音乐/美术共存互不干扰） |
+
+#### 数据导入结果
+
+- **7 附件共 1347 组**（组级 GEN 投档：计划数/投档人数/最低分/最低排位）：美术与设计 488/369 校、音乐 401/158、体育 169/139、表(导)演 106/73、播音与主持 98/90、舞蹈 53/45、书法 30/30
+- **3 所新设院校补库**：郑州美术学院 `4141014831`、河南体育学院 `4141014879`、成都美术学院 `4151014985`（官方码从 `全国高等院校名单2026.xls` 查证；防灾科技学院 `4113011775` 仅在 2025 附件2 普通类出现、未在艺体附件，保留映射备用未建行）
+- **踩坑修复**：① 附件投档最低分/排位有 `-` 空值 → 解析 `_num()` 兜底 0；② `19027` 北师大(珠海校区) 被 college_code_map 误映射到本部 `4111010027` → 美术 g212 吞并音乐 g212、书法 g211 吞并体育 g211 共丢 2 行 → 修 map 到 `4111010027-ZH` + 补 3 行 + 脚本加 `VARIANT_MAP`；③ PK 缺 art_category → 重建迁移
+- **min_rank=0 组**（投档人数 0/未招满）保留入库但不参与评分（SQL `min_rank > 0` 过滤），共 29 组
+
+#### 验证
+
+- 综合分：美术(400,250)=512.5 / 播音=490 / 体育=535；超限 301 → 400 错误
+- browse 艺体类：`data_status:ok`，美术与设计 rank=5000 → 冲50/稳100/保80 三档正常；rank=30000 → 冲50/稳47/保0（位次驱动分档正确）
+- 建表：艺体类本科批 create 20 slots（cap=20，6 冲/8 稳/6 保），prob/tier 正常
+- `pytest tests/services/custom tests/tools/custom tests/capabilities` = **220 passed**（+18 新）；`tsc --noEmit` 无错
+
+#### 关键设计
+
+- **艺体类与普通类隔离**：科类 `艺体类` + 批次 `艺体类本科批` 双重标识，与物理/历史普通类互不混入（官方不得兼报）
+- **art_category 列优先过滤**：投档数据按列精确过滤类别（推荐/浏览/建表），专业名关键词（`ART_CATEGORY_KEYWORDS`）仅作无列时的兜底；GEN-only 组（无组内专业明细）不过滤
+- **无数据不报错**：无投档数据时返回 `data_status:"no_data"` + 明确提示，前端友好展示
+- **位次晚点给出**（用户口风）：艺体类综合分只进 profile，不驱动位次推荐；本次投档表自带最低排位，位次驱动已可用（前端当前用 `user_rank` 字段驱动分档）
+
 
 ## 使用方式
 
