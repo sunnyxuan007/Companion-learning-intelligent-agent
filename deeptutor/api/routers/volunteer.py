@@ -259,8 +259,8 @@ async def browse_recommendations(body: BrowseRequest):
     # Convert score→rank if rank not provided
     effective_rank = body.user_rank
     if not effective_rank and body.score:
-        from deeptutor.services.custom.admission_dao import score_to_rank
-        effective_rank = score_to_rank(body.admission_province, 2025, body.exam_category, body.score)
+        from deeptutor.services.custom.admission_dao import score_to_rank_latest
+        effective_rank = score_to_rank_latest(body.admission_province, body.exam_category, body.score)
 
     profile = {
         "rank": effective_rank or 0,
@@ -272,9 +272,9 @@ async def browse_recommendations(body: BrowseRequest):
     # Build score_rank_range if score_min/score_max provided
     score_rank_range = None
     if body.score_min is not None and body.score_max is not None and body.admission_province:
-        from deeptutor.services.custom.admission_dao import score_to_rank
-        rank_low = score_to_rank(body.admission_province, 2025, body.exam_category, max(0, body.score_min))
-        rank_high = score_to_rank(body.admission_province, 2025, body.exam_category, min(750, body.score_max))
+        from deeptutor.services.custom.admission_dao import score_to_rank_latest
+        rank_low = score_to_rank_latest(body.admission_province, body.exam_category, max(0, body.score_min))
+        rank_high = score_to_rank_latest(body.admission_province, body.exam_category, min(750, body.score_max))
         if rank_low > 0 and rank_high > 0:
             score_rank_range = (min(rank_low, rank_high), max(rank_low, rank_high))
 

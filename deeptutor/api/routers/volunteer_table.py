@@ -9,6 +9,14 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
+def _plan_label(p: dict[str, Any]) -> str:
+    """志愿表命名：志愿表{月日时分}（紧凑式，如 志愿表06281626）。"""
+    import time as _t
+    import datetime as _dt
+    ts = p.get("created_at") or 0
+    dt = _dt.datetime.fromtimestamp(ts)
+    return f"{dt.month:02d}{dt.day:02d}{dt.hour:02d}{dt.minute:02d}"
+
 PROVINCE_RULES: dict[str, dict[str, Any]] = {
     "江苏": {"groups": 40, "mode": "院校专业组", "ratio": [3, 3, 4]},
     "浙江": {"groups": 80, "mode": "专业", "ratio": [3, 4, 3]},
@@ -30,6 +38,9 @@ class SlotItem(BaseModel):
     adjustable: bool = True
     reason: str = ""
     majors: list[dict] = []
+    province_code: str = ""
+    bargain_score: float = 0
+    rank_source: str = "official"
 
 
 class CreatePlanRequest(BaseModel):
@@ -149,7 +160,23 @@ async def create_plan(body: CreatePlanRequest):
         r["id"]: r["name"]
         for r in conn.execute("SELECT id, name FROM majors").fetchall()
     }
+    # 本省招生代码：official_code -> province_code（用于志愿表卡片展示）
+    import re as _re
+    province_codes: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT official_code, province_code FROM college_code_map WHERE province = ?",
+        (body.province,),
+    ).fetchall():
+        province_codes.setdefault(r["official_code"], r["province_code"])
     conn.close()
+
+    def _lookup_province_code(college_id: str) -> str:
+        if not college_id:
+            return ""
+        if college_id in province_codes:
+            return province_codes[college_id] or ""
+        base = _re.sub(r"-[A-Za-z0-9]+$", "", college_id)
+        return province_codes.get(base, "")
 
     slots: list[dict[str, Any]] = []
     order = 1
@@ -177,6 +204,7 @@ async def create_plan(body: CreatePlanRequest):
             slots.append({
                 "college_id": college["id"],
                 "college_name": college["name"],
+                "province_code": _lookup_province_code(college["id"]),
                 "group_code": item["group_code"],
                 "group_name": f"{item['group_code']}组",
                 "group_prob": item["group_prob"],
@@ -190,8 +218,43 @@ async def create_plan(body: CreatePlanRequest):
             })
             order += 1
 
-    plan = dao_create(body.user_id, body.province, body.exam_category, body.rank, rules, slots, batch=body.batch)
+    # 去重：内容与任一活跃方案完全一致则拒绝（保留顺序 + rank，rank 不同即不同）
+    from deeptutor.services.custom.volunteer_table_dao import find_duplicate
+    dup = find_duplicate(body.user_id, slots, rank=body.rank, exam_category=body.exam_category)
+    if dup:
+        raise HTTPException(
+            status_code=409,
+            detail=f"与志愿表{_plan_label(dup)}完全相同，未保存",
+        )
+
+    plan = dao_create(
+        body.user_id, body.province, body.exam_category, body.rank, rules, slots,
+        batch=body.batch, score=body.score,
+    )
     return plan
+
+
+@router.get("/volunteer/plan/trash")
+async def list_trash(user_id: str = "default"):
+    from deeptutor.services.custom.volunteer_table_dao import list_trash as dao_trash
+
+    now = __import__("time").time()
+    return {
+        "plans": [
+            {
+                **p,
+                "remaining_days": max(0, int((p.get("deleted_at") or now) + 7 * 24 * 3600 - now) // 86400),
+            }
+            for p in dao_trash(user_id)
+        ]
+    }
+
+
+@router.get("/volunteer/plan/list")
+async def list_plans(user_id: str = "default"):
+    from deeptutor.services.custom.volunteer_table_dao import list_plans as dao_list
+
+    return {"plans": dao_list(user_id)}
 
 
 @router.get("/volunteer/plan/{plan_id}")
@@ -217,18 +280,31 @@ async def update_plan(plan_id: str, body: UpdateSlotsRequest):
 
 @router.delete("/volunteer/plan/{plan_id}")
 async def delete_plan(plan_id: str):
-    from deeptutor.services.custom.volunteer_table_dao import delete_plan as dao_delete
+    """软删除：移入回收站（保留 7 天）。"""
+    from deeptutor.services.custom.volunteer_table_dao import soft_delete_plan
 
-    if not dao_delete(plan_id):
+    if not soft_delete_plan(plan_id):
         raise HTTPException(status_code=404, detail="Plan not found")
     return {"ok": True}
 
 
-@router.get("/volunteer/plan/list")
-async def list_plans(user_id: str = "default"):
-    from deeptutor.services.custom.volunteer_table_dao import list_plans as dao_list
+@router.post("/volunteer/plan/{plan_id}/restore")
+async def restore_plan(plan_id: str):
+    from deeptutor.services.custom.volunteer_table_dao import restore_plan as dao_restore
 
-    return {"plans": dao_list(user_id)}
+    plan = dao_restore(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return {"plan": plan}
+
+
+@router.post("/volunteer/plan/{plan_id}/purge")
+async def purge_plan(plan_id: str):
+    from deeptutor.services.custom.volunteer_table_dao import purge_plan as dao_purge
+
+    if not dao_purge(plan_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return {"ok": True}
 
 
 @router.put("/volunteer/plan/{plan_id}/reorder")
@@ -457,7 +533,22 @@ async def ai_tune_plan(plan_id: str):
 @router.post("/volunteer/plan/{plan_id}/clone")
 async def clone_plan(plan_id: str, body: ClonePlanRequest):
     from deeptutor.services.custom.volunteer_table_dao import clone_plan as dao_clone
+    from deeptutor.services.custom.volunteer_table_dao import find_duplicate, get_plan
 
+    source = get_plan(plan_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    # 去重：内容与任一其他活跃方案完全一致则拒绝（保留顺序 + rank；源方案自身除外，
+    # 因为"保存"即对当前方案做新快照）
+    dup = find_duplicate(
+        body.user_id, source["slots"],
+        rank=source.get("rank"), exam_category=source.get("exam_category"),
+    )
+    if dup and dup["id"] != plan_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"与志愿表{_plan_label(dup)}完全相同，未保存",
+        )
     new_plan = dao_clone(plan_id, body.user_id, body.name)
     if not new_plan:
         raise HTTPException(status_code=404, detail="Plan not found")

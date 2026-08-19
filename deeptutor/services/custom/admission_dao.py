@@ -337,6 +337,50 @@ def get_total_candidates(
     return 0
 
 
+def rank_to_score_latest(
+    province: str,
+    exam_category: str,
+    rank: int,
+    prefer_year: int = 2026,
+    fallback_year: int = 2025,
+    batch_category: str = "本科",
+) -> float:
+    """优先用 prefer_year 分段，无数据时回退 fallback_year。"""
+    score = rank_to_score(province, prefer_year, exam_category, rank, batch_category)
+    if score:
+        return score
+    return rank_to_score(province, fallback_year, exam_category, rank, batch_category)
+
+
+def score_to_rank_latest(
+    province: str,
+    exam_category: str,
+    score: float,
+    prefer_year: int = 2026,
+    fallback_year: int = 2025,
+    batch_category: str = "本科",
+) -> int:
+    """优先用 prefer_year 分段，无数据时回退 fallback_year。"""
+    rank = score_to_rank(province, prefer_year, exam_category, score, batch_category)
+    if rank:
+        return rank
+    return score_to_rank(province, fallback_year, exam_category, score, batch_category)
+
+
+def get_total_candidates_latest(
+    province: str,
+    exam_category: str,
+    prefer_year: int = 2026,
+    fallback_year: int = 2025,
+    batch_category: str = "本科",
+) -> int:
+    """优先用 prefer_year 分段，无数据时回退 fallback_year。"""
+    total = get_total_candidates(province, prefer_year, exam_category, batch_category)
+    if total:
+        return total
+    return get_total_candidates(province, fallback_year, exam_category, batch_category)
+
+
 def bulk_import_score_rank(records: list[dict[str, Any]]) -> int:
     """Import 一分一段 data. Records must have: province, year, exam_category,
     score, cumulative_rank, batch_category."""

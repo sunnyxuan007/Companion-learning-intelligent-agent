@@ -1590,6 +1590,137 @@ L3 memory (profile.md / preferences.md)
 - [ ] API 计费：部署方统一付费 or 用户自带 key（BYOK）
 - [ ] 志愿模块数据隔离改造是否本轮做（不做则多用户无意义）
 
+### Phase 22 🚀 系统评测体系（2026-08-18 规划，待实施）
+
+> 状态：方案已定，**未实施**。三个方向 + 个性化论证。用户确认三方向都要，方向 3 已从"公开基准集跑分"改为"架构消融实验"（裸模型跑 C-Eval 测的是 DeepSeek 的成绩，无差异化价值；数据/RAG 别人也能堆；**真正差异化是架构设计**——确定性引擎算数值不幻觉、LLM 只做表达）。
+
+#### 目标
+
+拿我们的系统（伴学tutor）与外部基线对比，产出可量化报告/宣传背书。产出：报告/论文/上线宣传/内部了解。
+
+#### 三个方向
+
+| 方向 | 内容 | 数据/基线 | 成本 | 优先 |
+|------|------|----------|------|------|
+| 1 推荐引擎回测 | 用历史录取数据预演推荐，真实投档验证命中率 | 库内 2023-2026 `admission_ranks` + 桌面 2025/2026 官方投档表 | 零 API 成本 | 高 |
+| 2 AI 对话评测 | 志愿咨询问题集 + LLM-as-Judge 打分 | 30 题左右，pro 评 flash，可人工复核 | 低（¥几元） | 中 |
+| 3a 架构消融实验 | A裸LLM / B+RAG / C+工具 / D完整系统，逐层量化增益 + 事实性自动核验 | 自建志愿专属题集，对照 DB 自动判定 | 低 | 中 |
+| 3b 个性化增益 | 带画像 vs 去画像对照 + 冷启动曲线 + 论文口径映射 | 合成画像 + seed 学习记录（用户拍板：先造，真实数据后续再换） | 低 | 中 |
+
+#### 方向 1 关键设计决策（回测）
+
+- **batch 归一化**：历史年份 batch="本科批次"，2026="本科批"，回测脚本必须归一
+- 跨年验证（2023+2024 → 推荐 → 2025 真实验证）比同年级卷更客观
+- 指标：冲/稳/保命中率、录取概率误差、滑档率
+- 纯脚本 `scripts/backtest_scorer.py`，不碰现有代码
+- 排位表（`parse_guide_ranks.py` 试点）可为院校名单提供第三方校验（95% 吻合）
+
+#### 方向 3a 消融实验设计
+
+对应 `volunteer_chat_service.py` 编排层，逐层叠加看增益：
+
+| 变体 | 含义 | 给 LLM 提供什么 |
+|------|------|----------------|
+| A 裸 LLM | 直接提问，零辅助 | 只有用户问题本身 |
+| B +RAG | A + 知识库 | `doc_chunks_v2` 检索到的政策/章程/FAQ 上下文 |
+| C +工具 | A + 工具调用 | `college_search`/`admission_query` 等真实 DB 数据（不注入 RAG 文本） |
+| D 完整系统 | 现状 CRAG 编排 | 工具数据 + RAG 上下文 + 学习者画像（`learner_profile`），即生产链路 |
+
+- **量化口径**：B−A = RAG 增益；C−A = 真实数据/工具增益；C−B = 哪种辅助更有效；**D−C = 个性化 + 综合编排增量**（连接 3b）
+- **指标**：事实性题对照 DB 答案自动核验（命中/幻觉率），看幻觉率逐层下降
+- 题集：志愿专属 30-50 题（`data/user/custom/benchmark/questions.json`），兼顾事实性/数值/策略题
+
+#### 方向 3b 个性化增益论证（论文支撑已查证）
+
+**主线**：领域研究证明"个性化录取概率 + 画像融合推荐"显著改善录取结果 → 我们的系统正是这类 "ML-assisted personalized advising"，且比论文实现多三层个性化（学习记录驱动的学业匹配 / 自适应权重 / L3 长期画像）。
+
+| 文献 | 核心数据 | 对应我们的能力 |
+|------|---------|---------------|
+| Ye, "Choice"（中国集中录取 ML 辅助志愿咨询 field experiment） | ML 个性化咨询：录取概率 **+24.4pp**（TOT）、录取院校质量 **+0.598 SD**（TOT）；ML ≈ 专家咨询但可规模化 | `volunteer_scorer` 个性化录取概率 + 冲稳保推荐 |
+| Chile NBER w34164（全国规模化信息干预） | 未录取者 **+44%** 获录取、匹配更高排名项目 **+20%**、两年后续读 **+34%** | 个性化概率 + AI 对话抽屉专业推荐 |
+| Ye, EFP（中国穷省 RCT, N=32,834） | 精准预测干预提升学术匹配 0.1-0.2 SD（compilers），指南+工作坊 TOT ≈ 0.18 SD | 等位次换算 + 冲稳保策略诊断 |
+| MDPI Applied Sciences 2024（211） | 融合学业+社经画像的推荐优于纯学业数据；XAI 解释提升信任 | `_calc_academic_fit` + `adaptive_weights` + evidence 透明化 |
+| bjet.13116 meta-analysis | 自适应式个性化学习效应量 **0.35**（15 RCT / 53,029 学习者） | study_records → 自适应权重调优 |
+| LettinGo arXiv:2506.18309 | LLM 生成用户画像用于推荐，处理冷启动 | `memory_bridge.py` L3 learner_profile + 冷启动 |
+
+**量化实验**：
+- **P 对比**：`D带画像` vs `D'去画像(默认权重)` → 推荐集合 Jaccard 差异率、slots 个性化比例、academic_fit 覆盖率、概率 rank 相关性
+- **冷启动曲线**：学习记录 0 → 10 → 50+ 条时推荐方案演化（对应 LettinGo / 元分析自适应增益）
+- **画像来源**：基准脚本内置确定性合成画像（如"理科强/数学物理弱/就业导向"多组 + 对应 seed 学习记录），可复现；留 `--use-real-profile` 开关，真实 `default` 用户有数据后一键切换
+
+#### 现实约束
+
+- 磁盘仅剩 2.7G：方向 1 零 API 成本优先；3a/3b 纯 API 调用无磁盘压力
+- 方向 2/3 消耗 DeepSeek 额度，需监控
+- 底层是 DeepSeek v4 API（非自训模型），评测本质是"系统化 Prompt+RAG+工具叠加后 vs 原始模型"
+
+#### 实施顺序（已确认）
+
+① 更新 AGENTS.md（本记录）→ ② 方向 1 回测 `scripts/backtest_scorer.py` → ③ 方向 3a+3b 消融+个性化（`scripts/benchmark_ablation.py` + 题集 + 报告）→ ④ 方向 2 对话评测
+
+### Phase 22.5 🚀 志愿表历史管理重构（2026-08-19 已实施）
+
+> 状态：已完成 ✅（200 tests passed + tsc 通过）。在历史志愿表功能上重构为 **弹窗 + 回收站 + 去重** 模式。
+
+#### 需求（用户拍板）
+
+- **命名**：`志愿表{月日时分}` 紧凑式（如 `志愿表06281626`），年月日不在名字里，年份用**独立小标签**展示
+- **志愿数量**：`{slots_count}/{groups}`（`groups` 取 `province_rules.groups`，广东 45）
+- **排序**：越新越靠上（`created_at DESC`），无序号、删除不重编号
+- **去重**：内容完全相同（保留顺序，顺序不同即不同）不保存并提示"与志愿表X完全相同"
+- **回收站**：删除进回收站保留 7 天，含恢复 / 永久删除，过期惰性清理
+
+#### 改动
+
+| 文件 | 说明 |
+|------|------|
+| `deeptutor/services/custom/db.py` | `volunteer_plans` 加 `deleted_at REAL DEFAULT NULL`（幂等 ALTER + CREATE 同步） |
+| `deeptutor/services/custom/volunteer_table_dao.py` | 新增 `soft_delete_plan`/`restore_plan`/`purge_plan`/`list_trash`/`find_duplicate`（`json.dumps` 保序比对）；`list_trash` 惰性清理超 7 天；`list_plans` 仅活跃 + `created_at DESC` |
+| `deeptutor/api/routers/volunteer_table.py` | `DELETE /plan/{id}` 改软删除；新增 `POST /plan/{id}/restore`、`POST /plan/{id}/purge`、`GET /plan/trash`；`clone` + `create` 去重 409；`_plan_label` 生成紧凑命名；**修复路由遮蔽 bug**（`/plan/list`、`/plan/trash` 静态路由移到 `{plan_id}` 之前）；`SlotItem` 补 `province_code`/`bargain_score`/`rank_source`；`create_plan` 按 `body.province` 查 `college_code_map` 注入 `province_code` |
+| `web/app/(workspace)/volunteer/page.tsx` | 历史方案改 Modal 弹窗（`@/components/common/Modal`），两 Tab 志愿表/回收站；命名+年份标签+`N/45`+剩余天数；叉叉软删/恢复/永久删除；去重 409 提示；`savePlan` 前端防呆（与最近保存一致不另存）；SlotItem 卡片学校全名 + `代码{province_code}` 徽标（去 truncate）；`addToPlan` 透传 `province_code` |
+| `tests/services/custom/test_volunteer_table_dao.py` | 新建：create/list、保序去重、软删/恢复/永久删、7 天惰性清理、回收站不参与去重、`_plan_label` |
+
+#### 关键设计
+
+- **去重语义**：`clone` 排除源方案自身（"保存"= 对当前方案做新快照）；`create` 全量比对；前端防呆覆盖"与最近保存一致"场景 → 三者配合无重复快照
+- **回收站天数**：`remaining_days = (deleted_at + 7d - now) // 86400`
+- **路由顺序坑**：`/volunteer/plan/list`、`/trash` 必须注册在 `/volunteer/plan/{plan_id}` 之前，否则被 catch-all 遮蔽（原代码即有此 bug，前端历史列表一直 404 靠静默容错）
+
+### Phase 22.6 🚀 2026 一分一段导入 + 分数入库 + 去重含 rank（2026-08-19 已实施）
+
+> 状态：已完成 ✅（202 passed + tsc 通过）。用户提供 2026 官方分数段 Excel → 导入 `score_rank_segments`；志愿表 `score` 列入库；去重纳入 rank；历史列表 + 当前表头部显示分数/位次。
+
+#### 改动
+
+| 文件 | 说明 |
+|------|------|
+| `scripts/import_2026_segments.py` | **新建**：2026 分数段 Excel（物理 1200 + 历史 1140 条，含本科/专科两档）导入 `score_rank_segments`，仅 `year=2026`（INSERT OR REPLACE 不动 2025）；表头 5 行、数据从 r6 起；首行 `"669（含以上）"` 剥离括号保留（v2 用 `int()` 会丢首行） |
+| `deeptutor/services/custom/admission_dao.py` | 新增 `rank_to_score_latest`/`score_to_rank_latest`/`get_total_candidates_latest` —— 优先 2026 分段，无数据回退 2025 |
+| `deeptutor/services/custom/volunteer_scorer.py` | `_calc_admission_prob`/`generate_group_recommendations` 硬编码 `2025` → `_latest` 兜底函数 |
+| `deeptutor/api/routers/volunteer.py` | browse/recommend 的 score→rank 换算改用 `score_to_rank_latest` |
+| `deeptutor/services/custom/db.py` | `volunteer_plans` 加 `score REAL DEFAULT NULL`（幂等 ALTER + CREATE 同步） |
+| `deeptutor/services/custom/volunteer_table_dao.py` | `create_plan`/`clone_plan` 透传 `score`；`find_duplicate(user_id, slots, rank, exam_category)` 把 **rank + 选科纳入身份**（同 slots 不同 rank = 不同方案可并存） |
+| `deeptutor/api/routers/volunteer_table.py` | create 传 `body.score` + `find_duplicate(rank=..., exam_category=...)`；clone 同样带 rank/exam_category |
+| `web/app/(workspace)/volunteer/page.tsx` | `formatScoreRank()` helper；历史弹窗行显示 `585分/位次14362` 蓝色徽标；当前志愿表头部加 `志愿表06281626 · 622分/位次14362 · (N 个)`；`addToPlan` create 分支补传 `score`；`SavedPlanSummary`/`PlanData` 加 `score`；savePlan 前端防呆加入 rank 比较 |
+| `tests/services/custom/test_volunteer_table_dao.py` | 新增 `test_find_duplicate_rank_sensitive`（同 slots 不同 rank 判不同）+ `test_create_plan_with_score`（入库 + clone 继承） |
+
+#### 数据回填
+
+- 42 条旧活跃方案无 score：用 2026 分段 `rank_to_score` 回填（42/42 成功，无跳过）
+- 回填后 `score IS NULL` 活跃方案 = 0
+
+#### 验证
+
+- `score_to_rank(广东,2026,物理,585)` = 46000；`rank_to_score(广东,2026,物理,14362)` = 622；考生总数 2026 物理 433366
+- API 冒烟：create score=622 入库 → clone 继承 score → 同 slots 同 rank 409 拒绝、clone 重复 409 正确
+- `pytest tests/services/custom tests/tools/custom tests/capabilities` = **202 passed**；`tsc --noEmit` 无错
+
+#### 关键设计
+
+- **去重语义升级**：身份 = slots（保序）+ rank + exam_category。rank 不同视为不同方案（同份志愿不同位次场景可并存）
+- **年份切换策略**：2026 分段导入后评分引擎/换算默认 2026，无数据回退 2025（防御，正常不触发）
+- **2026 分段特点**：物理 max 699 / 历史 max 669，首行"（含以上）"已保留（对比 2025 版 max 697/672 是丢首行结果）
+
 ## 使用方式
 
 ```bash

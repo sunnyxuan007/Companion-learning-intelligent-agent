@@ -12,6 +12,7 @@ import {
 import { Bar } from "react-chartjs-2";
 import VolunteerChatDrawer from "@/components/volunteer/VolunteerChatDrawer";
 import AdmissionCountdown from "@/components/volunteer/AdmissionCountdown";
+import Modal from "@/components/common/Modal";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Filler);
 
@@ -79,6 +80,7 @@ interface SlotMajor {
 interface SlotItem {
   college_id: string;
   college_name: string;
+  province_code?: string;
   group_code: string;
   group_name: string;
   group_prob: number;
@@ -98,11 +100,28 @@ interface PlanData {
   province: string;
   exam_category: string;
   rank: number;
+  score?: number | null;
   province_rules: Record<string, unknown>;
   slots: SlotItem[];
   status: string;
+  batch?: string;
   created_at: number;
   updated_at: number;
+}
+
+interface SavedPlanSummary {
+  id: string;
+  created_at: number;
+  province: string;
+  exam_category?: string;
+  batch?: string;
+  status: string;
+  slots_count: number;
+  groups: number;
+  score?: number | null;
+  rank?: number | null;
+  deleted_at?: number;
+  remaining_days?: number;
 }
 
 interface GroupRecItem {
@@ -123,6 +142,28 @@ function formatMajorMeta(mj: Partial<SlotMajor>): string {
   if (mj.campus) parts.push(mj.campus);
   if (mj.tuition) parts.push(`${mj.tuition}元/年`);
   return parts.join(" · ");
+}
+
+/** 志愿表命名：志愿表{月日时分}（紧凑式，如 志愿表06281626）。 */
+function planLabel(createdAt: number): string {
+  const d = new Date(createdAt * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `志愿表${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+/** 完整时间：6月28日 16:26。 */
+function planFullTime(createdAt: number): string {
+  const d = new Date(createdAt * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 分数/排名显示：585分/位次14362（无分数时仅显示位次）。 */
+function formatScoreRank(score?: number | null, rank?: number | null): string {
+  const s = score ? `${score}分` : "";
+  const r = rank ? `位次${rank}` : "";
+  if (s && r) return `${s}/${r}`;
+  return s || r || "";
 }
 
 const USER_ID = "default";
@@ -166,8 +207,10 @@ export default function VolunteerPage() {
   } | null>(null);
   const [hollandLoading, setHollandLoading] = useState(false);
   const [hollandMsg, setHollandMsg] = useState("");
-  const [savedPlans, setSavedPlans] = useState<{id:string;created_at:number;province:string;status:string}[]>([]);
+  const [savedPlans, setSavedPlans] = useState<SavedPlanSummary[]>([]);
+  const [trashPlans, setTrashPlans] = useState<SavedPlanSummary[]>([]);
   const [showSavedPlans, setShowSavedPlans] = useState(false);
+  const [historyTab, setHistoryTab] = useState<"plans" | "trash">("plans");
   const [allCategories, setAllCategories] = useState<string[]>([]);
   const [majorCategories, setMajorCategories] = useState<string[]>([]);
   const [strategies, setStrategies] = useState<string[]>(["default"]);
@@ -240,7 +283,45 @@ export default function VolunteerPage() {
   const loadSavedPlans = useCallback(async () => {
     try {
       const res = await fetch("/api/v1/volunteer/plan/list?user_id=" + USER_ID);
-      if (res.ok) setSavedPlans(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        const plans: PlanData[] = data.plans || [];
+        setSavedPlans(plans.map((p) => ({
+          id: p.id,
+          created_at: p.created_at,
+          province: p.province,
+          exam_category: p.exam_category,
+          batch: p.batch,
+          status: p.status,
+          slots_count: (p.slots || []).length,
+          groups: (p.province_rules?.groups as number) || 0,
+          score: p.score,
+          rank: p.rank,
+        })));
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadTrash = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/volunteer/plan/trash?user_id=" + USER_ID);
+      if (res.ok) {
+        const data = await res.json();
+        const plans: (PlanData & { remaining_days?: number })[] = data.plans || [];
+        setTrashPlans(plans.map((p) => ({
+          id: p.id,
+          created_at: p.created_at,
+          province: p.province,
+          exam_category: p.exam_category,
+          batch: p.batch,
+          status: p.status,
+          slots_count: (p.slots || []).length,
+          groups: (p.province_rules?.groups as number) || 0,
+          score: p.score,
+          rank: p.rank,
+          remaining_days: p.remaining_days,
+        })));
+      }
     } catch { /* ignore */ }
   }, []);
 
@@ -254,25 +335,63 @@ export default function VolunteerPage() {
   const deleteSavedPlan = useCallback(async (id: string) => {
     try {
       await fetch(`/api/v1/volunteer/plan/${id}`, { method: "DELETE" });
-      setSavedPlans(prev => prev.filter(p => p.id !== id));
-      if (plan?.id === id) { setPlan(null); setDiagnosis(null); }
+      loadSavedPlans();
+      loadTrash();
     } catch { /* ignore */ }
-  }, [plan]);
+  }, [loadSavedPlans, loadTrash]);
+
+  const restoreSavedPlan = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/v1/volunteer/plan/${id}/restore`, { method: "POST" });
+      if (res.ok) { loadSavedPlans(); loadTrash(); }
+    } catch { /* ignore */ }
+  }, [loadSavedPlans, loadTrash]);
+
+  const purgeSavedPlan = useCallback(async (id: string) => {
+    try {
+      await fetch(`/api/v1/volunteer/plan/${id}/purge`, { method: "POST" });
+      loadTrash();
+    } catch { /* ignore */ }
+  }, [loadTrash]);
 
   const savePlan = useCallback(async () => {
     if (!plan) return;
     setPlanMsg("");
     try {
-      const res = await fetch(`/api/v1/volunteer/plan/${plan.id}`, {
-        method: "PUT",
+      // 防呆：若与最近一次保存内容完全一致（含 rank），直接提示不另存
+      const latest = savedPlans[0];
+      if (latest && latest.slots_count === plan.slots.length && latest.rank === plan.rank) {
+        const latestFull = await (async () => {
+          try {
+            const r = await fetch(`/api/v1/volunteer/plan/${latest.id}`);
+            return r.ok ? await r.json() : null;
+          } catch { return null; }
+        })();
+        if (latestFull && JSON.stringify(latestFull.slots) === JSON.stringify(plan.slots)) {
+          setPlanMsg(`与志愿表${planLabel(latest.created_at)}完全相同，未保存`);
+          return;
+        }
+      }
+      const res = await fetch(`/api/v1/volunteer/plan/${plan.id}/clone`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slots: plan.slots }),
+        body: JSON.stringify({ user_id: USER_ID }),
       });
-      if (res.ok) { setPlan(await res.json()); setPlanMsg("志愿表已保存"); loadSavedPlans(); }
+      if (res.ok) {
+        const newPlan = await res.json();
+        setPlan(newPlan);
+        setPlanMsg("已保存为新方案");
+        loadSavedPlans();
+      } else if (res.status === 409) {
+        const data = await res.json().catch(() => null);
+        setPlanMsg(data?.detail || "当前方案与已有历史方案完全相同，未另存");
+      } else {
+        throw new Error("保存失败");
+      }
     } catch (e) {
       setPlanMsg(e instanceof Error ? e.message : "保存失败");
     }
-  }, [plan, loadSavedPlans]);
+  }, [plan, savedPlans, loadSavedPlans]);
 
   const toggleCity = (city: string) => {
     setSelectedCities((prev) =>
@@ -469,6 +588,7 @@ export default function VolunteerPage() {
     const newSlot: SlotItem = {
       college_id: college.id,
       college_name: college.name || "",
+      province_code: group.province_code || "",
       group_code: group.group_code,
       group_name: `${group.group_code}组`,
       group_prob: group.group_prob,
@@ -503,6 +623,7 @@ export default function VolunteerPage() {
             rank: rank ? parseInt(rank) : 0,
             level: level || null,
             strategies: strategies.length > 0 ? strategies : ["default"],
+            score: score ? parseInt(score) : null,
             batch,
           }),
         });
@@ -1102,6 +1223,19 @@ export default function VolunteerPage() {
             <MessageSquare className="h-4 w-4" />
             问 AI
           </button>
+          <button
+            onClick={() => {
+              loadSavedPlans();
+              loadTrash();
+              setHistoryTab("plans");
+              setShowSavedPlans(v => !v);
+            }}
+            type="button"
+            className="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-white px-4 py-2 text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            <ListOrdered className="h-4 w-4" />
+            历史方案
+          </button>
         </div>
       </div>
 
@@ -1244,7 +1378,14 @@ export default function VolunteerPage() {
       {plan && plan.slots.length > 0 && (
         <div className="mb-8">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">当前志愿表 ({plan.slots.length} 个)</h2>
+            <h2 className="text-lg font-semibold">
+              <span className="mr-2">当前志愿表</span>
+              <span className="mr-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600">{planLabel(plan.created_at)}</span>
+              <span className="mr-2 rounded bg-blue-50 px-1.5 py-0.5 text-xs font-medium text-blue-600">
+                {formatScoreRank(plan.score, plan.rank) || "—"}
+              </span>
+              <span className="text-sm font-normal text-gray-500">({plan.slots.length} 个)</span>
+            </h2>
           </div>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <PlanTierCard
@@ -1300,9 +1441,6 @@ export default function VolunteerPage() {
             </button>
             <button onClick={savePlan} className="flex items-center gap-1.5 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50">
               <Save className="h-4 w-4" /> 保存
-            </button>
-            <button onClick={() => { loadSavedPlans(); setShowSavedPlans(v => !v); }} className="flex items-center gap-1.5 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-              <ListOrdered className="h-4 w-4" /> 历史方案
             </button>
             <button onClick={reorderPlan} className="flex items-center gap-1.5 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
               <ListOrdered className="h-4 w-4" /> 一键调序
@@ -1378,29 +1516,103 @@ export default function VolunteerPage() {
         </div>
       )}
 
-      {/* 历史方案 */}
-      {showSavedPlans && (
-        <div className="mt-4 rounded-lg border bg-white p-4 shadow-sm">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="font-semibold text-gray-700">历史志愿方案</h3>
-            <button onClick={() => setShowSavedPlans(false)} className="text-sm text-gray-400 hover:text-gray-600">关闭</button>
+      {/* 历史方案弹窗（志愿表 / 回收站） */}
+      <Modal
+        isOpen={showSavedPlans}
+        onClose={() => setShowSavedPlans(false)}
+        title="历史志愿方案"
+        titleIcon={<ListOrdered className="h-5 w-5 text-blue-600" />}
+        width="lg"
+      >
+        <div className="p-4">
+          {/* Tab 切换 */}
+          <div className="mb-4 flex items-center gap-1 rounded-lg bg-gray-100 p-1">
+            <button
+              type="button"
+              onClick={() => { setHistoryTab("plans"); loadSavedPlans(); }}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${historyTab === "plans" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+            >
+              志愿表（{savedPlans.length}）
+            </button>
+            <button
+              type="button"
+              onClick={() => { setHistoryTab("trash"); loadTrash(); }}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${historyTab === "trash" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+            >
+              回收站（{trashPlans.length}）
+            </button>
           </div>
-          {savedPlans.length === 0 && <p className="text-sm text-gray-400">暂无历史方案</p>}
-          <div className="max-h-64 space-y-2 overflow-y-auto">
-            {savedPlans.map((sp) => (
-              <div key={sp.id} className="flex items-center justify-between rounded border bg-white px-3 py-2 text-sm">
-                <span className="text-gray-700">
-                  {sp.province}方案 · {new Date(sp.created_at * 1000).toLocaleString("zh-CN")}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => loadPlan(sp.id)} className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-600 hover:bg-blue-100">加载</button>
-                  <button onClick={() => deleteSavedPlan(sp.id)} className="rounded bg-red-50 px-2 py-1 text-xs text-red-600 hover:bg-red-100">删除</button>
+
+          {historyTab === "plans" && (
+            <div className="space-y-2">
+              {savedPlans.length === 0 && <p className="py-6 text-center text-sm text-gray-400">暂无历史方案</p>}
+              {savedPlans.map((sp) => (
+                <div
+                  key={sp.id}
+                  onClick={() => loadPlan(sp.id)}
+                  className="group flex cursor-pointer items-center justify-between rounded-lg border bg-white px-3 py-2.5 text-sm hover:border-blue-200 hover:bg-blue-50/50"
+                  title="点击加载此方案进行修改"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
+                      {new Date(sp.created_at * 1000).getFullYear()}年
+                    </span>
+                    <span className="font-medium text-gray-800">{planLabel(sp.created_at)}</span>
+                    <span className="text-xs text-gray-400">{planFullTime(sp.created_at)}</span>
+                    <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-600">
+                      {formatScoreRank(sp.score, sp.rank) || "—"}
+                    </span>
+                    <span className="shrink-0 text-xs text-gray-500">{sp.slots_count}/{sp.groups || "—"}</span>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteSavedPlan(sp.id); }}
+                    className="shrink-0 rounded p-1 text-gray-300 hover:bg-red-100 hover:text-red-600"
+                    title="移入回收站"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
+
+          {historyTab === "trash" && (
+            <div className="space-y-2">
+              {trashPlans.length === 0 && <p className="py-6 text-center text-sm text-gray-400">回收站暂无内容</p>}
+              {trashPlans.map((sp) => (
+                <div
+                  key={sp.id}
+                  className="flex items-center justify-between rounded-lg border bg-white px-3 py-2.5 text-sm"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
+                      {new Date(sp.created_at * 1000).getFullYear()}年
+                    </span>
+                    <span className="font-medium text-gray-400 line-through decoration-gray-300">{planLabel(sp.created_at)}</span>
+                    <span className="text-xs text-gray-400">{planFullTime(sp.created_at)}</span>
+                    <span className="shrink-0 text-xs text-gray-500">{sp.slots_count}/{sp.groups || "—"}</span>
+                    <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-600">剩余{sp.remaining_days ?? 7}天</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      onClick={() => restoreSavedPlan(sp.id)}
+                      className="rounded bg-green-50 px-2 py-1 text-xs text-green-600 hover:bg-green-100"
+                    >
+                      恢复
+                    </button>
+                    <button
+                      onClick={() => purgeSavedPlan(sp.id)}
+                      className="rounded bg-red-50 px-2 py-1 text-xs text-red-600 hover:bg-red-100"
+                    >
+                      永久删除
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      )}
+      </Modal>
 
       <div className="mt-8">
         <AdmissionCountdown province={province} />
@@ -1751,9 +1963,14 @@ function PlanTierCard({
               className={`rounded-lg border-l-4 bg-white p-3 shadow-sm cursor-grab active:cursor-grabbing ${tColor}`}
             >
               <div className="flex items-start justify-between">
-                <div className="flex items-center gap-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-1 min-w-0">
                   <GripVertical className="h-4 w-4 shrink-0 text-gray-300" />
-                  <span className="font-medium text-gray-900 truncate" title={slot.college_name}>{slot.college_name}</span>
+                  <span className="font-medium text-gray-900">{slot.college_name}</span>
+                  {slot.province_code && (
+                    <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-600" title="本省招生代码">
+                      代码 {slot.province_code}
+                    </span>
+                  )}
                   {slot.group_code && (
                     <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
                       {slot.group_name || `${slot.group_code}组`}

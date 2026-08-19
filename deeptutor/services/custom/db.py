@@ -172,6 +172,8 @@ def init_db() -> None:
         slots TEXT NOT NULL,
         status TEXT DEFAULT 'draft',
         batch TEXT DEFAULT '本科批',
+        deleted_at REAL DEFAULT NULL,
+        score REAL DEFAULT NULL,
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL
     );
@@ -320,6 +322,20 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(volunteer_plans)").fetchall()]
         if "batch" not in cols:
             conn.execute("ALTER TABLE volunteer_plans ADD COLUMN batch TEXT DEFAULT '本科批'")
+    except Exception:
+        pass
+    # Migration: add deleted_at to volunteer_plans (软删除/回收站)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(volunteer_plans)").fetchall()]
+        if "deleted_at" not in cols:
+            conn.execute("ALTER TABLE volunteer_plans ADD COLUMN deleted_at REAL DEFAULT NULL")
+    except Exception:
+        pass
+    # Migration: add score to volunteer_plans (历史列表显示分数)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(volunteer_plans)").fetchall()]
+        if "score" not in cols:
+            conn.execute("ALTER TABLE volunteer_plans ADD COLUMN score REAL DEFAULT NULL")
     except Exception:
         pass
     # Migration: college code map (province code <-> national official code)

@@ -216,11 +216,13 @@ def _calc_admission_prob(
 
     if not total_cand:
         from deeptutor.services.custom.admission_dao import (
-            get_total_candidates,
+            get_total_candidates_latest,
         )
-        total_cand = get_total_candidates(province, 2025, exam_category)
+        total_cand = get_total_candidates_latest(province, exam_category)
     if not total_cand:
         return 0.5, {"reason": "无考生总数数据，使用默认概率"}
+
+    from deeptutor.services.custom.admission_dao import get_total_candidates
 
     p_cand = user_rank / total_cand
     major_id = major.get("id") or major.get("major_id")
@@ -620,7 +622,7 @@ def generate_group_recommendations(
     batch: str = "本科批",
 ) -> dict[str, Any]:
     from deeptutor.services.custom.db import get_connection
-    from deeptutor.services.custom.admission_dao import score_to_rank
+    from deeptutor.services.custom.admission_dao import score_to_rank_latest
 
     user_profile = user_profile or {}
     user_rank = user_profile.get("rank", 0) or 0
@@ -652,7 +654,7 @@ def generate_group_recommendations(
     if score_rank_range:
         rank_low, rank_high = score_rank_range
     elif user_profile.get("score") and user_rank:
-        rank_low = score_to_rank(province, 2025, exam_category, min(750, int(user_profile["score"]) + 50)) or 0
+        rank_low = score_to_rank_latest(province, exam_category, min(750, int(user_profile["score"]) + 50)) or 0
 
     year_weights = {2025: 0.5, 2024: 0.35, 2023: 0.15}
 
