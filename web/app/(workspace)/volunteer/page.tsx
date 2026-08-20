@@ -105,6 +105,7 @@ interface PlanData {
   slots: SlotItem[];
   status: string;
   batch?: string;
+  warning?: string;
   created_at: number;
   updated_at: number;
 }
@@ -134,6 +135,11 @@ interface GroupRecItem {
   detail_scores: Record<string, number>;
   bargain_score?: number;
   rank_source?: string;
+  tier: "reach" | "steady" | "safe";
+}
+
+function tierBarColor(tier: string): string {
+  return tier === "reach" ? "bg-green-500" : tier === "steady" ? "bg-yellow-500" : "bg-blue-500";
 }
 
 function formatMajorMeta(mj: Partial<SlotMajor>): string {
@@ -192,6 +198,7 @@ export default function VolunteerPage() {
   const [plan, setPlan] = useState<PlanData | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planMsg, setPlanMsg] = useState("");
+  const [planError, setPlanError] = useState("");
   const [diagnosis, setDiagnosis] = useState<Record<string, unknown> | null>(null);
   const [showDiagnosis, setShowDiagnosis] = useState(false);
   const [aiTuning, setAiTuning] = useState(false);
@@ -221,15 +228,20 @@ export default function VolunteerPage() {
   const [convertedRank, setConvertedRank] = useState<number | null>(null);
   const [browseGroups, setBrowseGroups] = useState<GroupRecItem[]>([]);
   const [browseMode, setBrowseMode] = useState(false);
+  const [browseWarning, setBrowseWarning] = useState("");
   const [checkedMajors, setCheckedMajors] = useState<Record<string, string[]>>({});
   const [scoreRange, setScoreRange] = useState<[number, number] | null>(null);
   const [showDist, setShowDist] = useState(false);
   const [artCategory, setArtCategory] = useState("美术与设计");
   const [artDirection, setArtDirection] = useState<string>("美术与设计");
+  const [artInputMode, setArtInputMode] = useState<"仅综合分" | "文化课+专业分">("文化课+专业分");
   const [cultureScore, setCultureScore] = useState("");
   const [majorScore, setMajorScore] = useState("");
-  const [artComposite, setArtComposite] = useState<number | null>(null);
-  const [artRank, setArtRank] = useState<number | null>(null);
+  const [artCompositeScore, setArtCompositeScore] = useState("");
+  const [artRankInput, setArtRankInput] = useState("");
+  const artRankManual = useRef(false);
+  const [artRankWarn, setArtRankWarn] = useState("");
+  const [artEstRank, setArtEstRank] = useState<number | null>(null);
   const [artCategories, setArtCategories] = useState<{ code: string; name: string; formula: string; directions?: string[] }[]>([]);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
@@ -293,13 +305,39 @@ export default function VolunteerPage() {
 
   const handleExamCategoryChange = (value: string) => {
     setExamCategory(value);
-    setBatch(value === "艺体类" ? "艺体类本科批" : "本科批");
+    // 从艺体类切回普通类时，批次需同步回普通本科批（艺体类批次不再适用）
+    if (value !== "艺体类" && batch === "艺体类本科批") {
+      setBatch("本科批");
+    }
+  };
+
+  const handleBatchChange = (value: string) => {
+    setBatch(value);
+    // 批次栏是艺体类/普通类的唯一切换入口：
+    // - 选"艺体类本科批" → 联动科类为艺体类
+    // - 选普通/提前批 → 若当前是艺体类，切回物理（艺体类只有本科批）
+    if (value === "艺体类本科批") {
+      setExamCategory("艺体类");
+    } else if (examCategory === "艺体类") {
+      setExamCategory("物理");
+    }
   };
 
   useEffect(() => {
-    if (examCategory !== "艺体类" || !cultureScore || !majorScore) {
-      setArtComposite(null);
-      setArtRank(null);
+    if (examCategory !== "艺体类") {
+      setArtCompositeScore("");
+      setArtRankInput("");
+      setArtRankWarn("");
+      setArtEstRank(null);
+      artRankManual.current = false;
+      return;
+    }
+    const hasComposite = artInputMode === "仅综合分" && artCompositeScore;
+    const hasCM = artInputMode === "文化课+专业分" && cultureScore && majorScore;
+    if (!hasComposite && !hasCM) {
+      setArtCompositeScore("");
+      setArtRankWarn("");
+      setArtEstRank(null);
       return;
     }
     let cancelled = false;
@@ -309,20 +347,33 @@ export default function VolunteerPage() {
       body: JSON.stringify({
         art_category: artCategory,
         art_direction: artDirection,
-        culture_score: parseInt(cultureScore),
-        major_score: parseInt(majorScore),
+        ...(artInputMode === "仅综合分"
+          ? { composite_score: parseFloat(artCompositeScore) }
+          : { culture_score: parseInt(cultureScore), major_score: parseInt(majorScore) }),
+        user_rank: artRankInput ? parseInt(artRankInput) : null,
         bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
       }),
     })
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((data) => {
         if (cancelled) return;
-        setArtComposite(data.score);
-        setArtRank(data.rank ?? null);
+        if (artInputMode === "仅综合分" && !data.errors?.length && data.score != null) {
+          const rounded = String(Number(data.score));
+          if (rounded !== String(Number(artCompositeScore))) {
+            setArtCompositeScore(rounded);
+          }
+        }
+        // 灰色预估排位：未填位次或位次超范围时按方向一分一段换算显示（不自动填入位次框）
+        setArtEstRank(data.from_user === false && data.rank ? Number(data.rank) : null);
+        setArtRankWarn(
+          data.from_user === false && data.rank && artRankInput
+            ? `位次超出当年分段表范围，已按综合分换算为约 ${data.rank}`
+            : ""
+        );
       })
-      .catch(() => { if (!cancelled) { setArtComposite(null); setArtRank(null); } });
+      .catch(() => { if (!cancelled) { setArtRankWarn(""); setArtEstRank(null); } });
     return () => { cancelled = true; };
-  }, [examCategory, artCategory, artDirection, cultureScore, majorScore, bonusPoints]);
+  }, [examCategory, artCategory, artDirection, artInputMode, cultureScore, majorScore, artCompositeScore, artRankInput, bonusPoints]);
 
   // 艺体类别切换时重置方向为默认
   useEffect(() => {
@@ -551,6 +602,7 @@ export default function VolunteerPage() {
     setRecommendMsg("");
     setBrowseGroups([]);
     setBrowseMode(false);
+    setBrowseWarning("");
     setPlan(null);
     setDiagnosis(null);
     setCheckedMajors({});
@@ -562,8 +614,9 @@ export default function VolunteerPage() {
         body: JSON.stringify({
           admission_province: province,
           exam_category: examCategory,
-          user_rank: rank ? parseInt(rank) : null,
+          user_rank: examCategory === "艺体类" ? (artRankInput ? parseInt(artRankInput) : null) : (rank ? parseInt(rank) : null),
           score: score ? parseInt(score) : null,
+          bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
           level: level || null,
           strategies: strategies.length > 0 ? strategies : ["default"],
           major_categories: majorCategories.length > 0 ? majorCategories : null,
@@ -574,6 +627,8 @@ export default function VolunteerPage() {
           batch,
           ...(examCategory === "艺体类" ? {
             art_category: artCategory,
+            art_direction: artDirection,
+            composite_score: artCompositeScore ? parseFloat(artCompositeScore) : null,
             culture_score: cultureScore ? parseInt(cultureScore) : null,
             major_score: majorScore ? parseInt(majorScore) : null,
           } : {}),
@@ -602,6 +657,7 @@ export default function VolunteerPage() {
             detail_scores: (item.detail_scores || {}) as Record<string, number>,
             bargain_score: item.bargain_score as number | undefined,
             rank_source: item.rank_source as string | undefined,
+            tier: tierKey as "reach" | "steady" | "safe",
           });
         }
       }
@@ -615,6 +671,7 @@ export default function VolunteerPage() {
       }
       setBrowseGroups(allItems);
       setBrowseMode(true);
+      setBrowseWarning((data.warning as string) || "");
       setRecommendMsg(`共找到 ${allItems.length} 个推荐专业组`);
 
       // Default: all majors checked
@@ -629,7 +686,7 @@ export default function VolunteerPage() {
     } finally {
       setLoading(false);
     }
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange, artCategory, cultureScore, majorScore]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput]);
 
   const toggleMajor = useCallback((groupKey: string, majorId: string) => {
     setCheckedMajors((prev) => {
@@ -680,17 +737,19 @@ export default function VolunteerPage() {
           body: JSON.stringify({
             user_id: USER_ID, province,
             exam_category: examCategory,
-            rank: rank ? parseInt(rank) : 0,
+            rank: examCategory === "艺体类" ? (artRankInput ? parseInt(artRankInput) : null) : (rank ? parseInt(rank) : 0),
             level: level || null,
             strategies: strategies.length > 0 ? strategies : ["default"],
             score: score ? parseInt(score) : null,
+            bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
             batch,
-...(examCategory === "艺体类" ? {
-            art_category: artCategory,
-            art_direction: artDirection,
-            culture_score: cultureScore ? parseInt(cultureScore) : null,
-            major_score: majorScore ? parseInt(majorScore) : null,
-          } : {}),
+            ...(examCategory === "艺体类" ? {
+              art_category: artCategory,
+              art_direction: artDirection,
+              composite_score: artCompositeScore ? parseFloat(artCompositeScore) : null,
+              culture_score: cultureScore ? parseInt(cultureScore) : null,
+              major_score: majorScore ? parseInt(majorScore) : null,
+            } : {}),
           }),
         });
         if (res.ok) {
@@ -705,13 +764,17 @@ export default function VolunteerPage() {
         }
       } catch { /* ignore */ }
     }
-  }, [plan, province, examCategory, batch, rank, level, strategies, artCategory, cultureScore, majorScore, score]);
+  }, [plan, province, examCategory, batch, rank, level, strategies, artCategory, artDirection, cultureScore, majorScore, score, bonusPoints, artCompositeScore, artRankInput]);
 
   const createFullPlan = useCallback(async () => {
-    if (!rank && examCategory !== "艺体类") { setPlanMsg("请先输入位次"); return; }
-    if (examCategory === "艺体类" && !cultureScore) { setPlanMsg("请先输入文化课分数"); return; }
+    if (!rank && examCategory !== "艺体类") { setPlanMsg("请先输入位次"); setPlanError(""); return; }
+    if (examCategory === "艺体类") {
+      const hasAny = artRankInput || artCompositeScore || (cultureScore && majorScore);
+      if (!hasAny) { setPlanMsg("请填写综合分、位次或文化课+专业分"); setPlanError(""); return; }
+    }
     setPlanLoading(true);
     setPlanMsg("");
+    setPlanError("");
     setPlan(null);
     setDiagnosis(null);
     try {
@@ -721,7 +784,7 @@ export default function VolunteerPage() {
         body: JSON.stringify({
           user_id: USER_ID, province,
           exam_category: examCategory,
-          rank: parseInt(rank),
+          rank: examCategory === "艺体类" ? (artRankInput ? parseInt(artRankInput) : null) : parseInt(rank),
           level: level || null,
           strategies: strategies.length > 0 ? strategies : ["default"],
           major_categories: majorCategories.length > 0 ? majorCategories : null,
@@ -729,10 +792,12 @@ export default function VolunteerPage() {
           ...(selectedRegions.length > 0 ? { regions: selectedRegions } : {}),
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           score: score ? parseInt(score) : null,
+          bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
           batch,
           ...(examCategory === "艺体类" ? {
             art_category: artCategory,
             art_direction: artDirection,
+            composite_score: artCompositeScore ? parseFloat(artCompositeScore) : null,
             culture_score: cultureScore ? parseInt(cultureScore) : null,
             major_score: majorScore ? parseInt(majorScore) : null,
           } : {}),
@@ -742,10 +807,10 @@ export default function VolunteerPage() {
       setPlan(await res.json());
       setPlanMsg("志愿表已生成");
     } catch (e) {
-      setPlanMsg(e instanceof Error ? e.message : "请求失败");
+      setPlanError(e instanceof Error ? e.message : "请求失败");
     }
     setPlanLoading(false);
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, artCategory, artDirection, cultureScore, majorScore]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, bonusPoints, cityTier, selectedRegions, selectedCities, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput]);
 
   const handleRangeChange = useCallback((minScore: number, maxScore: number) => {
     setScoreRange([minScore, maxScore]);
@@ -968,18 +1033,8 @@ export default function VolunteerPage() {
                 />
                 <span className="text-sm">历史类</span>
               </label>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="radio"
-                  name="examCategory"
-                  value="艺体类"
-                  checked={examCategory === "艺体类"}
-                  onChange={(e) => handleExamCategoryChange(e.target.value)}
-                  className="accent-purple-600"
-                />
-                <span className="text-sm text-purple-700">艺体类</span>
-              </label>
             </div>
+            <p className="mt-1 text-xs text-gray-400">艺体类请直接在招生批次中选择「本科批（艺体类）」</p>
           </div>
           {examCategory === "艺体类" && (
             <>
@@ -1027,32 +1082,92 @@ export default function VolunteerPage() {
                 );
               })()}
               <div>
-                <label className="block text-sm font-medium text-gray-700">文化课分数</label>
-                <input
-                  type="number"
-                  value={cultureScore}
-                  onChange={(e) => setCultureScore(e.target.value)}
-                  placeholder="0-750"
-                  className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
-                />
+                <label className="block text-sm font-medium text-gray-700">综合分来源</label>
+                <div className="mt-1 flex gap-4">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="artInputMode"
+                      value="仅综合分"
+                      checked={artInputMode === "仅综合分"}
+                      onChange={() => setArtInputMode("仅综合分")}
+                      className="accent-purple-600"
+                    />
+                    <span className="text-sm">仅综合分</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="artInputMode"
+                      value="文化课+专业分"
+                      checked={artInputMode === "文化课+专业分"}
+                      onChange={() => setArtInputMode("文化课+专业分")}
+                      className="accent-purple-600"
+                    />
+                    <span className="text-sm">文化课+专业分</span>
+                  </label>
+                </div>
               </div>
+              {artInputMode === "仅综合分" ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">综合分</label>
+                  <input
+                    type="number"
+                    value={artCompositeScore}
+                    onChange={(e) => setArtCompositeScore(e.target.value)}
+                    placeholder="例如: 512.5"
+                    className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    综合分满分 750（含加分），系统自动换算对应位次
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">文化课分数</label>
+                    <input
+                      type="number"
+                      value={cultureScore}
+                      onChange={(e) => setCultureScore(e.target.value)}
+                      placeholder="0-750"
+                      className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">专业省统考分</label>
+                    <input
+                      type="number"
+                      value={majorScore}
+                      onChange={(e) => setMajorScore(e.target.value)}
+                      placeholder="0-300"
+                      className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      双上线：文化与专业省统考须同时达省控线方可投档
+                    </p>
+                  </div>
+                </>
+              )}
               <div>
-                <label className="block text-sm font-medium text-gray-700">专业省统考分</label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-gray-700">位次</label>
+                  {artEstRank && (
+                    <span className="text-xs text-gray-500">≈ 约 {artEstRank.toLocaleString()} 名（综合分换算）</span>
+                  )}
+                </div>
                 <input
                   type="number"
-                  value={majorScore}
-                  onChange={(e) => setMajorScore(e.target.value)}
-                  placeholder="0-300"
+                  value={artRankInput}
+                  onChange={(e) => { artRankManual.current = true; setArtRankInput(e.target.value); }}
+                  placeholder="例如: 5000"
                   className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
                 />
-                {artComposite !== null && (
-                  <p className="mt-1 text-sm font-medium text-purple-700">
-                    综合分 ≈ {artComposite.toFixed(1)}
-                    {artRank ? ` · 位次 ≈ ${artRank}` : ""}
-                  </p>
+                {artRankWarn && (
+                  <p className="mt-1 text-sm text-amber-600">⚠ {artRankWarn}</p>
                 )}
                 <p className="mt-1 text-xs text-gray-500">
-                  双上线：文化与专业省统考须同时达省控线方可投档
+                  填写位次后以你填的为准；不填或超出当年分段表范围时按综合分换算
                 </p>
               </div>
             </>
@@ -1061,13 +1176,11 @@ export default function VolunteerPage() {
             <label className="block text-sm font-medium text-gray-700">招生批次</label>
             <select
               value={batch}
-              onChange={(e) => setBatch(e.target.value)}
+              onChange={(e) => handleBatchChange(e.target.value)}
               className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
             >
               <option value="本科批">本科批（普通类）</option>
-              {examCategory === "艺体类" && (
-                <option value="艺体类本科批">本科批（艺体类）</option>
-              )}
+              <option value="艺体类本科批">本科批（艺体类）</option>
               <option value="提前批本科-军检类">提前批·军检类</option>
               <option value="提前批本科-非军检类">提前批·非军检类</option>
               <option value="提前批本科-卫生专项">提前批·卫生专项</option>
@@ -1380,7 +1493,7 @@ export default function VolunteerPage() {
         <div className="mt-3 flex flex-wrap gap-2">
           <button
             onClick={() => handleRecommend()}
-            disabled={loading || (!rank && examCategory !== "艺体类") || (examCategory === "艺体类" && !cultureScore)}
+            disabled={loading || (!rank && examCategory !== "艺体类") || (examCategory === "艺体类" && !artRankInput && !artCompositeScore && !(cultureScore && majorScore))}
             className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
           >
             <Search className="h-4 w-4" />
@@ -1388,11 +1501,11 @@ export default function VolunteerPage() {
           </button>
           <button
             onClick={createFullPlan}
-            disabled={planLoading || (!rank && examCategory !== "艺体类") || (examCategory === "艺体类" && !cultureScore)}
+            disabled={planLoading || (!rank && examCategory !== "艺体类") || (examCategory === "艺体类" && !artRankInput && !artCompositeScore && !(cultureScore && majorScore))}
             className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-4 py-2 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
           >
             <ListOrdered className="h-4 w-4" />
-            {planLoading ? "生成中..." : "一键生成45格"}
+            {planLoading ? "生成中..." : `一键生成${examCategory === "艺体类" ? "20格" : "45格"}`}
           </button>
           <button
             onClick={() => { setChatOpen(true); setChatContext(undefined); }}
@@ -1416,6 +1529,8 @@ export default function VolunteerPage() {
             历史方案
           </button>
         </div>
+        {planError && <p className="mt-3 text-center text-sm font-medium text-red-600">{planError}</p>}
+        {planMsg && <p className="mt-2 text-center text-sm text-blue-600">{planMsg}</p>}
       </div>
 
       {/* 浏览推荐 */}
@@ -1424,20 +1539,21 @@ export default function VolunteerPage() {
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-lg font-semibold">浏览推荐 — {browseGroups.length} 个专业组</h2>
             <button
-              onClick={() => setBrowseMode(false)}
+              onClick={() => { setBrowseMode(false); setBrowseWarning(""); }}
               className="text-sm text-gray-400 hover:text-gray-600"
             >
               收起
             </button>
           </div>
+          {browseWarning && (
+            <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+              ⚠ {browseWarning}
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {(["reach", "steady", "safe"] as const).map((tier) => {
-              const tierGroups = browseGroups.filter(g =>
-                tier === "reach" ? g.group_prob < 0.45
-                : tier === "steady" ? g.group_prob >= 0.45 && g.group_prob < 0.8
-                : g.group_prob >= 0.8
-              );
-              const labels = { reach: { title: "冲刺志愿", icon: <TrendingUp className="h-5 w-5" />, color: "text-green-600", desc: "录取概率 < 45%", max: 50 }, steady: { title: "稳妥志愿", icon: <BarChart3 className="h-5 w-5" />, color: "text-yellow-600", desc: "录取概率 45%-80%", max: 100 }, safe: { title: "保底志愿", icon: <Building2 className="h-5 w-5" />, color: "text-blue-600", desc: "录取概率 ≥ 80%", max: 80 } };
+              const tierGroups = browseGroups.filter(g => g.tier === tier);
+              const labels = { reach: { title: "冲刺志愿", icon: <TrendingUp className="h-5 w-5" />, color: "text-green-600", desc: "录取概率 < 35%", max: 50 }, steady: { title: "稳妥志愿", icon: <BarChart3 className="h-5 w-5" />, color: "text-yellow-600", desc: "录取概率 35%-65%", max: 100 }, safe: { title: "保底志愿", icon: <Building2 className="h-5 w-5" />, color: "text-blue-600", desc: "录取概率 ≥ 65%", max: 80 } };
               const l = labels[tier];
               return (
                 <div key={tier} className="rounded-lg border bg-white p-4 shadow-sm">
@@ -1474,13 +1590,13 @@ export default function VolunteerPage() {
                                 <span className="ml-1 rounded bg-orange-100 px-1.5 py-0.5 text-xs text-orange-600">捡漏</span>
                               )}
                             </div>
-                            <div className="flex shrink-0 items-center gap-1.5 pt-1">
-                              <div className="h-1.5 w-12 rounded-full bg-gray-200">
-                                <div className={`h-1.5 rounded-full ${g.group_prob >= 0.8 ? "bg-green-500" : g.group_prob >= 0.45 ? "bg-yellow-500" : "bg-red-400"}`}
-                                  style={{ width: `${Math.round(g.group_prob * 100)}%` }} />
-                              </div>
-                              <span className="w-7 text-right text-xs font-semibold text-blue-600">{Math.round(g.group_prob * 100)}%</span>
+                          </div>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <div className="h-1 flex-1 rounded-full bg-gray-200">
+                              <div className={`h-1 rounded-full ${tierBarColor(tier)}`}
+                                style={{ width: `${Math.round(g.group_prob * 100)}%` }} />
                             </div>
+                            <span className="shrink-0 text-xs font-semibold text-blue-600">{Math.round(g.group_prob * 100)}%</span>
                           </div>
 
                           {/* 组内专业列表 */}
@@ -1516,17 +1632,17 @@ export default function VolunteerPage() {
                                     />
                                     <span className="min-w-0 flex-1">
                                       <span className="block truncate text-xs text-gray-700">{mj.major_name}</span>
-                                      <span className="block truncate text-[10px] text-gray-400">{formatMajorMeta(mj) || "\u00a0"}</span>
+                                      <span className="block whitespace-normal break-words text-[10px] leading-snug text-gray-400">{formatMajorMeta(mj) || "\u00a0"}</span>
                                     </span>
                                     {mj.tag && (
                                       <span className={`shrink-0 rounded px-1 py-0.5 text-xs ${tagColor}`}>{mj.tag}</span>
                                     )}
                                     <div className="flex shrink-0 items-center gap-1.5">
                                       <div className="h-1.5 w-12 rounded-full bg-gray-200">
-                                        <div className={`h-1.5 rounded-full ${prob >= 0.8 ? "bg-green-500" : prob >= 0.45 ? "bg-yellow-500" : "bg-red-400"}`}
+                                        <div className={`h-1.5 rounded-full ${prob >= 0.65 ? "bg-green-500" : prob >= 0.35 ? "bg-yellow-500" : "bg-red-400"}`}
                                           style={{ width: `${Math.round(prob * 100)}%` }} />
                                       </div>
-                                      <span className="w-7 text-right text-xs text-gray-400">{Math.round(prob * 100)}%</span>
+                                      <span className="w-9 text-right text-xs text-gray-400">{Math.round(prob * 100)}%</span>
                                     </div>
                                   </label>
                                 );
@@ -1558,6 +1674,11 @@ export default function VolunteerPage() {
       {/* 当前志愿表 */}
       {plan && plan.slots.length > 0 && (
         <div className="mb-8">
+          {plan.warning && (
+            <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+              ⚠ {plan.warning}
+            </div>
+          )}
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold">
               <span className="mr-2">当前志愿表</span>
@@ -1615,7 +1736,6 @@ export default function VolunteerPage() {
               onDelete={deleteSlot}
             />
           </div>
-          {planMsg && <p className="mt-2 text-center text-sm text-blue-600">{planMsg}</p>}
           <div className="mt-4 flex flex-wrap justify-center gap-3">
             <button onClick={aiTunePlan} disabled={aiTuning} className="flex items-center gap-1.5 rounded-lg border bg-gradient-to-r from-violet-500 to-purple-500 px-4 py-2 text-sm font-medium text-white hover:from-violet-600 hover:to-purple-600 disabled:opacity-60">
               <Sparkles className="h-4 w-4" /> {aiTuning ? "AI 分析中…" : "AI 优化建议"}
@@ -2176,15 +2296,15 @@ function PlanTierCard({
                     </button>
                   )}
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5 pt-1">
-                  <div className="h-1.5 w-12 rounded-full bg-gray-200">
-                    <div className={`h-1.5 rounded-full ${groupProb >= 0.8 ? "bg-green-500" : groupProb >= 0.45 ? "bg-yellow-500" : "bg-red-400"}`}
-                      style={{ width: `${Math.round(groupProb * 100)}%` }} />
-                  </div>
-                  <span className="w-7 text-right text-xs font-semibold text-blue-600">
-                    {Math.round(groupProb * 100)}%
-                  </span>
+              </div>
+              <div className="mt-1.5 flex items-center gap-2">
+                <div className="h-1 flex-1 rounded-full bg-gray-200">
+                  <div className={`h-1 rounded-full ${tierBarColor(slot.tier)}`}
+                    style={{ width: `${Math.round(groupProb * 100)}%` }} />
                 </div>
+                <span className="shrink-0 text-xs font-semibold text-blue-600">
+                  {Math.round(groupProb * 100)}%
+                </span>
               </div>
               {slot.majors && slot.majors.length > 0 && (
                 <div className="mt-2 space-y-1">
@@ -2200,7 +2320,7 @@ function PlanTierCard({
                           <span className="ml-1.5 text-[10px] text-gray-400">{formatMajorMeta(mj)}</span>
                         </span>
                         {mj.admission_prob != null && (
-                          <span className="text-gray-400">{Math.round(mj.admission_prob * 100)}%</span>
+                          <span className="shrink-0 whitespace-nowrap text-gray-400">{Math.round(mj.admission_prob * 100)}%</span>
                         )}
                       </div>
                     );

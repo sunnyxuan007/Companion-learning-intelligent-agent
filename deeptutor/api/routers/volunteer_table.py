@@ -47,8 +47,9 @@ class CreatePlanRequest(BaseModel):
     user_id: str = "default"
     province: str = "广东"
     exam_category: str = "物理"
-    rank: int
+    rank: int | None = None
     score: int | None = None
+    bonus_points: int = 0
     level: str | None = None
     strategies: list[str] | None = None
     strategy: str | None = None  # deprecated, use strategies
@@ -62,6 +63,7 @@ class CreatePlanRequest(BaseModel):
     art_direction: str | None = None
     culture_score: int | None = None
     major_score: int | None = None
+    composite_score: float | None = None
 
 
 class UpdateSlotsRequest(BaseModel):
@@ -116,12 +118,40 @@ async def create_plan(body: CreatePlanRequest):
 
     colleges_map = {c["id"]: c for c in colleges}
 
+    from deeptutor.services.custom.art_sports import default_art_direction, resolve_art_rank
+
+    effective_rank = body.rank
+    if is_art:
+        art_rank, _ = resolve_art_rank(
+            province=body.province,
+            category_code=body.art_category or "美术与设计",
+            direction=body.art_direction or default_art_direction(body.art_category or "美术与设计"),
+            user_rank=body.rank,
+            composite_score=body.composite_score,
+            culture_score=body.culture_score,
+            major_score=body.major_score,
+            bonus_points=body.bonus_points,
+        )
+        if art_rank:
+            effective_rank = art_rank
+    elif not effective_rank:
+        raise HTTPException(status_code=400, detail="请填写位次")
+
     profile = {
-        "rank": body.rank,
+        "rank": effective_rank or 0,
         "province": body.province,
         "exam_category": body.exam_category,
         "user_id": body.user_id,
+        "score": body.score,
     }
+    if is_art:
+        if body.composite_score:
+            profile["composite_score"] = body.composite_score
+        elif body.culture_score and body.major_score:
+            from deeptutor.services.custom.art_sports import calc_composite_score
+            cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
+            if not cs.get("errors") and cs["score"]:
+                profile["composite_score"] = cs["score"]
     weights = get_user_weights(body.user_id)
     try:
         rec_result = generate_group_recommendations(
@@ -142,22 +172,6 @@ async def create_plan(body: CreatePlanRequest):
 
     if is_art and rec_result.get("data_status") == "no_data":
         raise HTTPException(status_code=400, detail=rec_result.get("message", "艺体类投档数据待补充"))
-
-    if is_art:
-        from deeptutor.services.custom.art_sports import calc_composite_score, default_art_direction
-        cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
-        if cs.get("errors"):
-            raise HTTPException(status_code=400, detail="; ".join(cs["errors"]))
-        if not body.rank and cs.get("score"):
-            # 综合分 → 位次（方向对应一分一段表；无数据回退类别主表）
-            from deeptutor.services.custom.admission_dao import score_to_rank_latest
-            direction = body.art_direction or default_art_direction(body.art_category or "美术与设计")
-            rank_by_dir = score_to_rank_latest(body.province, direction, cs["score"])
-            if not rank_by_dir:
-                rank_by_dir = score_to_rank_latest(body.province, body.art_category or "美术与设计", cs["score"])
-            if rank_by_dir:
-                body.rank = rank_by_dir
-                profile["rank"] = rank_by_dir
 
     if not is_art:
         rules = PROVINCE_RULES.get(body.province, PROVINCE_RULES["default"])
@@ -181,10 +195,10 @@ async def create_plan(body: CreatePlanRequest):
         extra.sort(key=lambda x: -x["total_score"])
         for item in extra[:remaining]:
             prob = item["group_prob"]
-            if prob >= 0.8:
+            if prob >= 0.65:
                 safe_pool.insert(safe_count, item)
                 safe_count += 1
-            elif prob >= 0.45:
+            elif prob >= 0.35:
                 steady_pool.insert(steady_count, item)
                 steady_count += 1
             else:
@@ -258,7 +272,7 @@ async def create_plan(body: CreatePlanRequest):
 
     # 去重：内容与任一活跃方案完全一致则拒绝（保留顺序 + rank，rank 不同即不同）
     from deeptutor.services.custom.volunteer_table_dao import find_duplicate
-    dup = find_duplicate(body.user_id, slots, rank=body.rank, exam_category=body.exam_category)
+    dup = find_duplicate(body.user_id, slots, rank=effective_rank, exam_category=body.exam_category)
     if dup:
         raise HTTPException(
             status_code=409,
@@ -266,9 +280,24 @@ async def create_plan(body: CreatePlanRequest):
         )
 
     plan = dao_create(
-        body.user_id, body.province, body.exam_category, body.rank, rules, slots,
+        body.user_id, body.province, body.exam_category, effective_rank, rules, slots,
         batch=body.batch, score=body.score,
     )
+    if is_art and steady_count == 0 and safe_count == 0:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT MAX(min_rank) AS mx FROM admission_ranks WHERE province=? AND exam_category=? AND art_category=? AND min_rank > 0 AND year = 2026",
+            (body.province, body.exam_category, body.art_category or "美术与设计"),
+        ).fetchone()
+        conn.close()
+        max_rank = row["mx"] if row and row["mx"] else 0
+        plan = {
+            **plan,
+            "warning": (
+                f"您的位次较高，超出艺体类投档数据中稳妥/保底覆盖范围"
+                f"（本类投档最高位次约 {max_rank}），当前志愿全部为冲刺。"
+            ),
+        }
     return plan
 
 

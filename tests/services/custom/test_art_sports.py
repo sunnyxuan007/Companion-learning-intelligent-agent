@@ -152,7 +152,7 @@ class TestScorerArtBranch:
         assert result["data_status"] == "no_data"
         assert "待补充" in result.get("message", "")
 
-    def test_art_with_data_uses_20_group_caps(self, custom_db: None) -> None:
+    def test_art_with_data_returns_full_tier_pools(self, custom_db: None) -> None:
         from deeptutor.services.custom.db import get_connection
         from deeptutor.services.custom.volunteer_scorer import generate_group_recommendations
 
@@ -203,10 +203,11 @@ class TestScorerArtBranch:
         )
         assert result["data_status"] == "ok"
         total = sum(len(v) for v in result["tiers"].values())
-        assert total == 20  # 6 冲 / 8 稳 / 6 保
-        assert len(result["tiers"]["reach"]) == 6
-        assert len(result["tiers"]["steady"]) == 8
-        assert len(result["tiers"]["safe"]) == 6
+        # 评分器返回完整各档池（不预截断 6/8/6），比例组装由 create_plan 完成
+        assert total == 30
+        assert len(result["tiers"]["reach"]) == 10
+        assert len(result["tiers"]["steady"]) == 10
+        assert len(result["tiers"]["safe"]) == 10
         conn = get_connection()
         for cid in ids:
             conn.execute("DELETE FROM admission_ranks WHERE college_id=?", (cid,))
@@ -271,3 +272,59 @@ class TestScorerArtBranch:
         conn.execute("DELETE FROM colleges WHERE id='ART_MIX'")
         conn.commit()
         conn.close()
+
+
+class TestResolveArtRank:
+    def test_user_rank_within_range_used(self):
+        # 用户填位次且在当年分段范围内 → 以用户位次为准
+        from deeptutor.services.custom.art_sports import resolve_art_rank
+        rank, from_user = resolve_art_rank(
+            "广东", "美术与设计", "美术与设计",
+            user_rank=500, composite_score=512.5,
+        )
+        assert rank == 500
+        assert from_user is True
+
+    def test_user_rank_out_of_range_converted(self):
+        # 用户位次超出分段表范围 → 按综合分换算
+        from deeptutor.services.custom.art_sports import resolve_art_rank
+        rank, from_user = resolve_art_rank(
+            "广东", "美术与设计", "美术与设计",
+            user_rank=99999999, composite_score=512.5,
+        )
+        assert from_user is False
+        assert rank is not None
+        assert rank < 99999999
+
+    def test_composite_only_converted(self):
+        # 仅综合分 → 换算位次
+        from deeptutor.services.custom.art_sports import resolve_art_rank
+        rank, from_user = resolve_art_rank(
+            "广东", "美术与设计", "美术与设计", composite_score=512.5,
+        )
+        assert from_user is False
+        assert rank is not None and rank > 0
+
+    def test_culture_major_computed(self):
+        # 文化课+专业分 → 先算综合分再换算
+        from deeptutor.services.custom.art_sports import resolve_art_rank
+        rank, from_user = resolve_art_rank(
+            "广东", "美术与设计", "美术与设计",
+            culture_score=400, major_score=250,
+        )
+        assert from_user is False
+        assert rank is not None and rank > 0
+
+    def test_direction_specific_rank_differs(self):
+        # 同综合分，不同方向位次不同
+        from deeptutor.services.custom.art_sports import resolve_art_rank
+        r_edu, _ = resolve_art_rank("广东", "音乐", "音乐教育(声乐主项)", composite_score=512.5)
+        r_vocal, _ = resolve_art_rank("广东", "音乐", "音乐表演(声乐)", composite_score=512.5)
+        assert r_edu is not None and r_vocal is not None
+        assert r_edu != r_vocal
+
+    def test_none_when_no_input(self):
+        from deeptutor.services.custom.art_sports import resolve_art_rank
+        rank, from_user = resolve_art_rank("广东", "美术与设计", "美术与设计")
+        assert rank is None
+        assert from_user is False

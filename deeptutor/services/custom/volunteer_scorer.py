@@ -832,14 +832,9 @@ def generate_group_recommendations(
             "steady": steady[:per_tier_caps.get("steady", 100)],
             "reach": reach[:per_tier_caps.get("reach", 50)],
         }
-    elif is_art:
-        # 艺体类本科批：20 个院校专业组，ratio [3,4,3] → 6 冲 / 8 稳 / 6 保
-        selected = {
-            "safe": safe[:6],
-            "steady": steady[:8],
-            "reach": reach[:6],
-        }
     else:
+        # 艺体类不在此预截断：20 组（6 冲 / 8 稳 / 6 保）由 create_plan 按
+        # ratio + 补缺组装，这里返回完整各档池，避免某档不足时无法补位
         per_tier = max(1, top_n // 3)
         selected = {
             "safe": safe[:per_tier],

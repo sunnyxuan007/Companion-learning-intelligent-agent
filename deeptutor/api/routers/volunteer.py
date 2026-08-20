@@ -95,6 +95,7 @@ class RecommendResponse(BaseModel):
     total_count: int
     violations: list[dict] = []
     data_status: str | None = None
+    warning: str | None = None
 
 
 class RecommendRequest(BaseModel):
@@ -123,6 +124,7 @@ class RecommendRequest(BaseModel):
     art_direction: str | None = None
     culture_score: int | None = None
     major_score: int | None = None
+    composite_score: float | None = None
 
 
 @router.post("/volunteer/recommend", response_model=RecommendResponse)
@@ -222,6 +224,7 @@ class BrowseRequest(BaseModel):
     exam_category: str = "物理"
     user_rank: int | None = None
     score: int | None = None
+    bonus_points: int = 0
     level: str | None = None
     strategies: list[str] | None = None
     strategy: str | None = None  # deprecated, use strategies
@@ -236,6 +239,7 @@ class BrowseRequest(BaseModel):
     art_direction: str | None = None
     culture_score: int | None = None
     major_score: int | None = None
+    composite_score: float | None = None
 
 
 @router.post("/volunteer/browse", response_model=RecommendResponse)
@@ -280,22 +284,31 @@ async def browse_recommendations(body: BrowseRequest):
     }
     is_art = is_art_sports(body.exam_category)
     art_direction = body.art_direction
-    if is_art and not art_direction:
-        art_direction = default_art_direction(body.art_category or "美术与设计")
-    if is_art and body.culture_score and body.major_score:
-        cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
-        if not cs.get("errors") and cs["score"]:
-            profile["composite_score"] = cs["score"]
-            # 综合分 → 位次（用方向对应的一分一段表；无数据时回退类别主表）
-            from deeptutor.services.custom.admission_dao import score_to_rank_latest
-            rank_by_dir = score_to_rank_latest(
-                body.admission_province, art_direction, cs["score"])
-            if not rank_by_dir:
-                rank_by_dir = score_to_rank_latest(
-                    body.admission_province, body.art_category or "美术与设计", cs["score"])
-            if not effective_rank and rank_by_dir:
-                effective_rank = rank_by_dir
-                profile["rank"] = rank_by_dir
+    if is_art:
+        if not art_direction:
+            art_direction = default_art_direction(body.art_category or "美术与设计")
+        from deeptutor.services.custom.art_sports import resolve_art_rank
+        art_rank, from_user = resolve_art_rank(
+            province=body.admission_province,
+            category_code=body.art_category or "美术与设计",
+            direction=art_direction,
+            user_rank=body.user_rank,
+            composite_score=body.composite_score,
+            culture_score=body.culture_score,
+            major_score=body.major_score,
+            bonus_points=body.bonus_points if hasattr(body, "bonus_points") else 0,
+        )
+        if art_rank:
+            effective_rank = art_rank
+            profile["rank"] = art_rank
+        if body.composite_score or (body.culture_score and body.major_score):
+            from deeptutor.services.custom.art_sports import calc_composite_score
+            if body.composite_score:
+                profile["composite_score"] = body.composite_score
+            else:
+                cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
+                if not cs.get("errors") and cs["score"]:
+                    profile["composite_score"] = cs["score"]
 
     # Build score_rank_range if score_min/score_max provided
     score_rank_range = None
@@ -371,6 +384,19 @@ async def browse_recommendations(body: BrowseRequest):
     resp = RecommendResponse(tiers=tiers_out, total_count=total)
     if is_art_sports(body.exam_category):
         resp.data_status = result.get("data_status", "ok")
+    tiers = result.get("tiers", {})
+    if is_art and tiers and not tiers.get("steady") and not tiers.get("safe") and tiers.get("reach"):
+        conn3 = get_connection()
+        row = conn3.execute(
+            "SELECT MAX(min_rank) AS mx FROM admission_ranks WHERE province=? AND exam_category=? AND art_category=? AND min_rank > 0 AND year = 2026",
+            (body.admission_province, body.exam_category, body.art_category or "美术与设计"),
+        ).fetchone()
+        conn3.close()
+        max_rank = row["mx"] if row and row["mx"] else 0
+        resp.warning = (
+            f"您的位次较高，超出艺体类投档数据中稳妥/保底覆盖范围"
+            f"（本类投档最高位次约 {max_rank}），当前推荐全部为冲刺。"
+        )
     return resp
 
 
@@ -379,6 +405,8 @@ class CompositeScoreRequest(BaseModel):
     art_direction: str | None = None
     culture_score: int | None = None
     major_score: int | None = None
+    composite_score: float | None = None
+    user_rank: int | None = None
     bonus_points: int = 0
 
 
@@ -392,18 +420,36 @@ async def art_sports_categories():
 
 @router.post("/volunteer/art-sports/composite-score")
 async def composite_score(body: CompositeScoreRequest):
-    from deeptutor.services.custom.art_sports import calc_composite_score, default_art_direction
+    from deeptutor.services.custom.art_sports import calc_composite_score, default_art_direction, resolve_art_rank
 
-    result = calc_composite_score(body.art_category, body.culture_score, body.major_score, body.bonus_points)
+    direction = body.art_direction or default_art_direction(body.art_category)
+    if body.composite_score is not None:
+        result: dict = {
+            "score": body.composite_score,
+            "culture": None, "major": None,
+            "formula": None, "errors": [],
+        }
+    else:
+        result = calc_composite_score(body.art_category, body.culture_score, body.major_score, body.bonus_points)
     if result.get("errors"):
         raise HTTPException(status_code=400, detail="; ".join(result["errors"]))
     if result.get("score"):
-        direction = body.art_direction or default_art_direction(body.art_category)
-        from deeptutor.services.custom.admission_dao import score_to_rank_latest
-        rank = score_to_rank_latest("广东", direction, result["score"])
-        if not rank:
-            rank = score_to_rank_latest("广东", body.art_category, result["score"])
-        result["rank"] = rank or None
+        rank, from_user = resolve_art_rank(
+            province="广东",
+            category_code=body.art_category,
+            direction=direction,
+            user_rank=body.user_rank,
+            composite_score=body.composite_score if body.composite_score is not None else result["score"],
+            culture_score=body.culture_score,
+            major_score=body.major_score,
+            bonus_points=body.bonus_points,
+        )
+        result["rank"] = rank
+        result["from_user"] = bool(from_user)
+        result["direction"] = direction
+    else:
+        result["rank"] = None
+        result["from_user"] = False
         result["direction"] = direction
     return result
 

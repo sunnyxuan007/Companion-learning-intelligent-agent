@@ -153,3 +153,50 @@ def art_batch_for(exam_category: str | None) -> str | None:
     if is_art_sports(exam_category):
         return BATCH_ART_UNDERGRAD
     return None
+
+
+def resolve_art_rank(
+    province: str,
+    category_code: str,
+    direction: str | None = None,
+    user_rank: int | None = None,
+    composite_score: float | None = None,
+    culture_score: float | None = None,
+    major_score: float | None = None,
+    bonus_points: float = 0,
+) -> tuple[int | None, bool]:
+    """统一解析艺体类位次。
+
+    优先级：
+    1. composite 缺失但有 culture+major → 用 calc_composite_score 补算
+    2. user_rank 有效（>0 且 ≤ 当年一分一段表总人数）→ 以用户位次为准（from_user=True）
+    3. 否则用 composite_score 按方向一分一段换算 → 返回换算位次（from_user=False）
+
+    返回：(rank, from_user)。三者皆无 → (None, False)。
+    """
+    from deeptutor.services.custom.admission_dao import (
+        score_to_rank_latest,
+        get_total_candidates_latest,
+    )
+
+    if composite_score is None:
+        if culture_score is None or major_score is None:
+            return None, False
+        cs = calc_composite_score(category_code, culture_score, major_score, bonus_points)
+        if cs.get("errors") or not cs.get("score"):
+            return None, False
+        composite_score = cs["score"]
+
+    effective_dir = direction or default_art_direction(category_code)
+
+    if user_rank and user_rank > 0:
+        total = get_total_candidates_latest(province, effective_dir)
+        if not total:
+            total = get_total_candidates_latest(province, category_code)
+        if total and user_rank <= total:
+            return user_rank, True
+
+    rank = score_to_rank_latest(province, effective_dir, composite_score)
+    if not rank:
+        rank = score_to_rank_latest(province, category_code, composite_score)
+    return (rank, False) if rank else (None, False)
