@@ -708,7 +708,8 @@ export default function VolunteerPage() {
   }, [plan, province, examCategory, batch, rank, level, strategies, artCategory, cultureScore, majorScore, score]);
 
   const createFullPlan = useCallback(async () => {
-    if (!rank) { setPlanMsg("请先输入位次"); return; }
+    if (!rank && examCategory !== "艺体类") { setPlanMsg("请先输入位次"); return; }
+    if (examCategory === "艺体类" && !cultureScore) { setPlanMsg("请先输入文化课分数"); return; }
     setPlanLoading(true);
     setPlanMsg("");
     setPlan(null);
@@ -1130,39 +1131,48 @@ export default function VolunteerPage() {
               </label>
             </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700">预估分数</label>
-            <input
-              type="number"
-              value={score}
-              onChange={(e) => { setScore(e.target.value); convertScoreToRank(e.target.value); }}
-              placeholder="例如: 620"
-              className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-          <div>
-            <div className="flex items-center justify-between">
-              <label className="block text-sm font-medium text-gray-700">预估位次</label>
-              {convertedRank && (
-                <span className="text-xs text-green-600">≈ 约 {convertedRank.toLocaleString()} 名</span>
-              )}
-              <button
-                onClick={() => { setChatOpen(true); setChatContext(undefined); }}
-                className="flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 transition-colors"
-                title="咨询 AI 志愿顾问"
-              >
-                <MessageSquare className="h-3.5 w-3.5" />
-                问 AI
-              </button>
-            </div>
-            <input
-              type="number"
-              value={rank}
-              onChange={(e) => setRank(e.target.value)}
-              placeholder="例如: 5000"
-              className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
+          {examCategory !== "艺体类" && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">预估分数</label>
+                <input
+                  type="number"
+                  value={score}
+                  onChange={(e) => { setScore(e.target.value); convertScoreToRank(e.target.value); }}
+                  placeholder="例如: 620"
+                  className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-gray-700">预估位次</label>
+                  {convertedRank && (
+                    <span className="text-xs text-green-600">≈ 约 {convertedRank.toLocaleString()} 名</span>
+                  )}
+                  <button
+                    onClick={() => { setChatOpen(true); setChatContext(undefined); }}
+                    className="flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 transition-colors"
+                    title="咨询 AI 志愿顾问"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    问 AI
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  value={rank}
+                  onChange={(e) => setRank(e.target.value)}
+                  placeholder="例如: 5000"
+                  className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            </>
+          )}
+          {examCategory === "艺体类" && (
+            <p className="text-xs text-purple-600">
+              艺体类按专业类别统一划线：请输入文化课分数与专业省统考分，系统自动换算综合分与方向位次。
+            </p>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700">政策性加分</label>
             <input
@@ -1370,7 +1380,7 @@ export default function VolunteerPage() {
         <div className="mt-3 flex flex-wrap gap-2">
           <button
             onClick={() => handleRecommend()}
-            disabled={loading || !rank}
+            disabled={loading || (!rank && examCategory !== "艺体类") || (examCategory === "艺体类" && !cultureScore)}
             className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
           >
             <Search className="h-4 w-4" />
@@ -1378,7 +1388,7 @@ export default function VolunteerPage() {
           </button>
           <button
             onClick={createFullPlan}
-            disabled={planLoading || !rank}
+            disabled={planLoading || (!rank && examCategory !== "艺体类") || (examCategory === "艺体类" && !cultureScore)}
             className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-4 py-2 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
           >
             <ListOrdered className="h-4 w-4" />
@@ -1450,8 +1460,8 @@ export default function VolunteerPage() {
                       const allChecked = allIds.length > 0 && allIds.every((id) => checked.includes(id));
                       return (
                         <div key={key} className="rounded-lg border bg-white p-3 shadow-sm">
-                          <div className="flex items-start justify-between">
-                            <div className="min-w-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
                               <span className="text-sm font-medium text-gray-900">{c.name}</span>
                               {g.province_code && (
                                 <span className="ml-1.5 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-600">代码 {g.province_code}</span>
@@ -1464,11 +1474,13 @@ export default function VolunteerPage() {
                                 <span className="ml-1 rounded bg-orange-100 px-1.5 py-0.5 text-xs text-orange-600">捡漏</span>
                               )}
                             </div>
-                            <span className="whitespace-nowrap text-sm font-bold text-blue-600">{Math.round(g.group_prob * 100)}%</span>
-                          </div>
-                          <div className="mt-1 h-1.5 w-full rounded-full bg-gray-200">
-                            <div className={`h-1.5 rounded-full ${g.group_prob >= 0.8 ? "bg-green-500" : g.group_prob >= 0.45 ? "bg-yellow-500" : "bg-red-400"}`}
-                              style={{ width: `${Math.round(g.group_prob * 100)}%` }} />
+                            <div className="flex shrink-0 items-center gap-1.5 pt-1">
+                              <div className="h-1.5 w-12 rounded-full bg-gray-200">
+                                <div className={`h-1.5 rounded-full ${g.group_prob >= 0.8 ? "bg-green-500" : g.group_prob >= 0.45 ? "bg-yellow-500" : "bg-red-400"}`}
+                                  style={{ width: `${Math.round(g.group_prob * 100)}%` }} />
+                              </div>
+                              <span className="w-7 text-right text-xs font-semibold text-blue-600">{Math.round(g.group_prob * 100)}%</span>
+                            </div>
                           </div>
 
                           {/* 组内专业列表 */}
@@ -2131,8 +2143,8 @@ function PlanTierCard({
               onDragOver={(e) => e.preventDefault()}
               className={`rounded-lg border-l-4 bg-white p-3 shadow-sm cursor-grab active:cursor-grabbing ${tColor}`}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex flex-wrap items-center gap-1 min-w-0">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
                   <GripVertical className="h-4 w-4 shrink-0 text-gray-300" />
                   <span className="font-medium text-gray-900">{slot.college_name}</span>
                   {slot.province_code && (
@@ -2164,13 +2176,15 @@ function PlanTierCard({
                     </button>
                   )}
                 </div>
-                <span className="whitespace-nowrap text-sm font-bold text-blue-600">
-                  {Math.round(groupProb * 100)}%
-                </span>
-              </div>
-              <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200">
-                <div className={`h-1.5 rounded-full ${groupProb >= 0.8 ? "bg-green-500" : groupProb >= 0.45 ? "bg-yellow-500" : "bg-red-400"}`}
-                  style={{ width: `${Math.round(groupProb * 100)}%` }} />
+                <div className="flex shrink-0 items-center gap-1.5 pt-1">
+                  <div className="h-1.5 w-12 rounded-full bg-gray-200">
+                    <div className={`h-1.5 rounded-full ${groupProb >= 0.8 ? "bg-green-500" : groupProb >= 0.45 ? "bg-yellow-500" : "bg-red-400"}`}
+                      style={{ width: `${Math.round(groupProb * 100)}%` }} />
+                  </div>
+                  <span className="w-7 text-right text-xs font-semibold text-blue-600">
+                    {Math.round(groupProb * 100)}%
+                  </span>
+                </div>
               </div>
               {slot.majors && slot.majors.length > 0 && (
                 <div className="mt-2 space-y-1">
