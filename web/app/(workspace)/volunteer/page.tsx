@@ -285,7 +285,7 @@ export default function VolunteerPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           score: parseInt(s),
-          from_year: 2025, to_year: 2025,
+          from_year: 2026, to_year: 2026,
           exam_category: examCategory,
           province: province,
         }),
