@@ -140,6 +140,11 @@ ruff check . && ruff format --check .     # 检查格式
 | `deeptutor/api/routers/volunteer_table.py` | 艺体类建表：batch 强制艺体类本科批 / cap 20 / 每组 6 专业 / 综合分校验 | 2026-08-19 |
 | `web/app/(workspace)/volunteer/page.tsx` | 选考科目加"艺体类"radio + 专业类别/综合分表单 + 艺体类批次联动 | 2026-08-19 |
 | `tests/services/custom/test_art_sports.py` | 艺体类框架测试（综合分公式/类别/no_data/20 组 cap）（新建） | 2026-08-19 |
+| `deeptutor/services/custom/art_sports.py` | 加 `ART_DIRECTIONS` 方向映射（音乐5/表导3/播音2）+ `art_directions`/`default_art_direction` | 2026-08-19 |
+| `deeptutor/api/routers/volunteer.py` | Browse/Recommend/composite-score 加 `art_direction`；综合分→位次按方向一分一段表换算 | 2026-08-19 |
+| `deeptutor/api/routers/volunteer_table.py` | CreatePlanRequest 加 `art_direction`；建表无位次时用综合分自动换算 | 2026-08-19 |
+| `web/app/(workspace)/volunteer/page.tsx` | 艺体类方向下拉（音乐/表导/播音）+ 综合分联动显示 ≈位次；browse/create 透传 art_direction | 2026-08-19 |
+| `tests/services/custom/test_art_sports.py` | 新增 `TestArtDirections`（方向映射/默认方向/未知回退） | 2026-08-19 |
 
 ### 新增文件
 
@@ -171,6 +176,8 @@ ruff check . && ruff format --check .     # 检查格式
 | `scripts/seed_rag_from_db.py` | RAG 种子脚本（新建）——从 DB 生成 FAQ/院校/专业/录取数据灌入向量库，2667 条 |
 | `deeptutor/services/custom/art_sports.py` | 艺体类填报框架（8 类类别 + 综合分公式 + 本科批 20 组规则） |
 | `scripts/import_art_sports_2026.py` | 2026 艺体类本科投档导入器（7 附件 1347 组 + 新院校补库） |
+| `scripts/parse_art_catalog.py` | 2026 招生专业目录（体育艺术版）DOCX 解析器 + 组内专业明细写库 |
+| `scripts/import_art_segments_2026.py` | 2026 艺体类一分一段表导入器（14 个文件含方向细分） |
 
 ## 架构图
 
@@ -1786,6 +1793,32 @@ L3 memory (profile.md / preferences.md)
 - **art_category 列优先过滤**：投档数据按列精确过滤类别（推荐/浏览/建表），专业名关键词（`ART_CATEGORY_KEYWORDS`）仅作无列时的兜底；GEN-only 组（无组内专业明细）不过滤
 - **无数据不报错**：无投档数据时返回 `data_status:"no_data"` + 明确提示，前端友好展示
 - **位次晚点给出**（用户口风）：艺体类综合分只进 profile，不驱动位次推荐；本次投档表自带最低排位，位次驱动已可用（前端当前用 `user_rank` 字段驱动分档）
+
+### Phase 23.1 🚀 体育艺术版目录组内专业明细 + 艺体类一分一段方向换算（2026-08-19 已实施）
+
+> 状态：均已完成 ✅（226 passed + tsc 通过）。用户提供 2026 招生专业目录（体育艺术版）DOCX + 14 个艺体类一分一段表，补全组内专业明细并支持方向级位次换算。
+
+#### 方向 A：组内专业明细导入（`scripts/parse_art_catalog.py`）
+
+- **数据源**：`（已压缩）2026年广东省招生专业目录 体育艺术版.docx`（物理+历史普通类目录 672+376 页解析在前，本脚本解析艺体 7 类段落）
+- **SECTIONS 段落范围**：体育 2109–3055、音乐 4359–6611、舞蹈 7198–7912、美术 8475–11758、书法 12658–12828、播音 12921–13455、表导 13623–14166
+  - **坑**：p11732 是误置的"专科"页眉，p11759 才是真专科标题；p11735–11758 含 4 所变体院校（19027 北师大珠海/80002 华南师大汕尾/80003 广工揭阳/80004 广技师河源）本科·统考内容 → 美术段扩到 11758
+- **`工` 占位符**：PDF 转换丢失数字的渲染残渣（85 行，如 `专业组252 工`、`145 音乐表演(古筝) 工`）；MAJOR_CELL_RE 加 `|\s+工(?:\s|$)` 终止符防吞字
+- **major_id 命名空间**：目录专业码是"组内 local 码"（如 005），与普通类 `college_major_name`（PK 仅 college_id+major_id）冲突且同校跨组重码 → 写入用 `{group_code}-{local_code}`（如 `207-008`、`212-023`），验证 0 冲突、2084 唯一组合
+- **CAT_DB 映射**：美术→美术与设计、播音→播音与主持、表导→表（导）演（全角括号，与 DB art_category 一致）
+- **写入**：仅写 DB 已有 GEN 行的组（has_gen 检查）；结果：命中组 1284、admission_ranks +1964、college_major_name +1964（含学制/学费/校区）
+- **覆盖率**：DB 1349 组，65 组未覆盖（4.8%，多为投档表组号与目录不一致或列换行分裂，如同济 g208 目录组头被拆行）——保留 GEN-only 兜底
+- **验证**：普通类未污染（山东建筑大学 005 仍=英语）；北师大珠海 212-023/024 正确；中山大学 音乐 250–260 全部 11 组正确；browse 端到端 majors 带 years/tuition/campus
+
+#### 方向 B：一分一段方向换算（14 文件导入 + API + 前端）
+
+- **方向码**：`score_rank_segments.exam_category` 存方向细分码：体育、美术与设计、音乐教育类、音乐教育(声乐主项)、音乐教育(器乐主项)、音乐表演(声乐)、音乐表演(器乐)、舞蹈、表(导)演(戏剧影视表演/服装表演/戏剧影视导演)、播音与主持(普通话/粤语)、书法（**戏曲无分段数据**，score_to_rank 返回 0）
+- **映射**：`ART_DIRECTIONS` = 音乐 5 表、表（导）演 3 表、播音与主持 2 表，其余类别单元素 `[类别码]`；`default_art_direction` 取第一项
+- **导入**：`scripts/import_art_segments_2026.py` 14 文件全部导入（year=2026，本科/专科 batch_category）：体育 494、美术与设计 644、音乐教育类 572、音乐教育(声乐主项) 518、音乐教育(器乐主项) 566、音乐表演(声乐) 564、音乐表演(器乐) 592、舞蹈 530、表导 3 方向 294/292/332、播音 2 方向 456/350、书法 272 条
+- **API**：BrowseRequest/CompositeScoreRequest/RecommendRequest 加 `art_direction`；browse 综合分→位次换算（方向段优先，无数据回退类别码）；composite-score 响应含 `rank`+`direction`；categories 接口返回每类 `directions`；volunteer_table 建表无位次时自动换算
+- **前端**：艺体类方向下拉（按类别过滤，默认第一项，切换类别时重置）；综合分旁显示 `· 位次 ≈ N`
+- **验证**：音乐(400,250)=512.5 综合分 → 音乐表演(声乐) 1044 / 音乐表演(器乐) 1395 / 音乐教育(声乐主项) 366 位次各异；browse 端到端 213 组、冲50/稳83/保80
+- **测试**：`TestArtDirections`（映射/默认方向/未知回退）7 例；pytest 226 passed；tsc --noEmit 无错
 
 
 ## 使用方式
