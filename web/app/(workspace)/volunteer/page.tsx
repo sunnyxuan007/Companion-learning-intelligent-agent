@@ -291,6 +291,11 @@ export default function VolunteerPage() {
     );
   };
 
+  const handleExamCategoryChange = (value: string) => {
+    setExamCategory(value);
+    setBatch(value === "艺体类" ? "艺体类本科批" : "本科批");
+  };
+
   useEffect(() => {
     if (examCategory !== "艺体类" || !cultureScore || !majorScore) {
       setArtComposite(null);
@@ -946,7 +951,7 @@ export default function VolunteerPage() {
                   name="examCategory"
                   value="物理"
                   checked={examCategory === "物理"}
-                  onChange={(e) => setExamCategory(e.target.value)}
+                  onChange={(e) => handleExamCategoryChange(e.target.value)}
                   className="accent-blue-600"
                 />
                 <span className="text-sm">物理类</span>
@@ -957,7 +962,7 @@ export default function VolunteerPage() {
                   name="examCategory"
                   value="历史"
                   checked={examCategory === "历史"}
-                  onChange={(e) => setExamCategory(e.target.value)}
+                  onChange={(e) => handleExamCategoryChange(e.target.value)}
                   className="accent-blue-600"
                 />
                 <span className="text-sm">历史类</span>
@@ -968,7 +973,7 @@ export default function VolunteerPage() {
                   name="examCategory"
                   value="艺体类"
                   checked={examCategory === "艺体类"}
-                  onChange={(e) => setExamCategory(e.target.value)}
+                  onChange={(e) => handleExamCategoryChange(e.target.value)}
                   className="accent-purple-600"
                 />
                 <span className="text-sm text-purple-700">艺体类</span>
