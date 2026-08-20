@@ -225,10 +225,12 @@ export default function VolunteerPage() {
   const [scoreRange, setScoreRange] = useState<[number, number] | null>(null);
   const [showDist, setShowDist] = useState(false);
   const [artCategory, setArtCategory] = useState("美术与设计");
+  const [artDirection, setArtDirection] = useState<string>("美术与设计");
   const [cultureScore, setCultureScore] = useState("");
   const [majorScore, setMajorScore] = useState("");
   const [artComposite, setArtComposite] = useState<number | null>(null);
-  const [artCategories, setArtCategories] = useState<{ code: string; name: string; formula: string }[]>([]);
+  const [artRank, setArtRank] = useState<number | null>(null);
+  const [artCategories, setArtCategories] = useState<{ code: string; name: string; formula: string; directions?: string[] }[]>([]);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
   const rangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -292,6 +294,7 @@ export default function VolunteerPage() {
   useEffect(() => {
     if (examCategory !== "艺体类" || !cultureScore || !majorScore) {
       setArtComposite(null);
+      setArtRank(null);
       return;
     }
     let cancelled = false;
@@ -300,16 +303,28 @@ export default function VolunteerPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         art_category: artCategory,
+        art_direction: artDirection,
         culture_score: parseInt(cultureScore),
         major_score: parseInt(majorScore),
         bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
       }),
     })
       .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((data) => { if (!cancelled) setArtComposite(data.score); })
-      .catch(() => { if (!cancelled) setArtComposite(null); });
+      .then((data) => {
+        if (cancelled) return;
+        setArtComposite(data.score);
+        setArtRank(data.rank ?? null);
+      })
+      .catch(() => { if (!cancelled) { setArtComposite(null); setArtRank(null); } });
     return () => { cancelled = true; };
-  }, [examCategory, artCategory, cultureScore, majorScore, bonusPoints]);
+  }, [examCategory, artCategory, artDirection, cultureScore, majorScore, bonusPoints]);
+
+  // 艺体类别切换时重置方向为默认
+  useEffect(() => {
+    const cat = artCategories.find((c) => c.code === artCategory);
+    const dirs = cat?.directions || [artCategory];
+    setArtDirection((prev) => (dirs.includes(prev) ? prev : dirs[0]));
+  }, [artCategory, artCategories]);
 
   const loadSavedPlans = useCallback(async () => {
     try {
@@ -665,11 +680,12 @@ export default function VolunteerPage() {
             strategies: strategies.length > 0 ? strategies : ["default"],
             score: score ? parseInt(score) : null,
             batch,
-            ...(examCategory === "艺体类" ? {
-              art_category: artCategory,
-              culture_score: cultureScore ? parseInt(cultureScore) : null,
-              major_score: majorScore ? parseInt(majorScore) : null,
-            } : {}),
+...(examCategory === "艺体类" ? {
+            art_category: artCategory,
+            art_direction: artDirection,
+            culture_score: cultureScore ? parseInt(cultureScore) : null,
+            major_score: majorScore ? parseInt(majorScore) : null,
+          } : {}),
           }),
         });
         if (res.ok) {
@@ -710,6 +726,7 @@ export default function VolunteerPage() {
           batch,
           ...(examCategory === "艺体类" ? {
             art_category: artCategory,
+            art_direction: artDirection,
             culture_score: cultureScore ? parseInt(cultureScore) : null,
             major_score: majorScore ? parseInt(majorScore) : null,
           } : {}),
@@ -722,7 +739,7 @@ export default function VolunteerPage() {
       setPlanMsg(e instanceof Error ? e.message : "请求失败");
     }
     setPlanLoading(false);
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, artCategory, cultureScore, majorScore]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, artCategory, artDirection, cultureScore, majorScore]);
 
   const handleRangeChange = useCallback((minScore: number, maxScore: number) => {
     setScoreRange([minScore, maxScore]);
@@ -981,6 +998,28 @@ export default function VolunteerPage() {
                   艺体类不分物理/历史，按专业类别统一划线、一起投档
                 </p>
               </div>
+              {(() => {
+                const cat = artCategories.find((c) => c.code === artCategory);
+                const dirs = cat?.directions?.length ? cat.directions : [artCategory];
+                if (dirs.length <= 1) return null;
+                return (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">方向细分</label>
+                    <select
+                      value={artDirection}
+                      onChange={(e) => setArtDirection(e.target.value)}
+                      className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none"
+                    >
+                      {dirs.map((d) => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      方向不同，同一综合分对应的位次不同（按方向一分一段表换算）
+                    </p>
+                  </div>
+                );
+              })()}
               <div>
                 <label className="block text-sm font-medium text-gray-700">文化课分数</label>
                 <input
@@ -1003,6 +1042,7 @@ export default function VolunteerPage() {
                 {artComposite !== null && (
                   <p className="mt-1 text-sm font-medium text-purple-700">
                     综合分 ≈ {artComposite.toFixed(1)}
+                    {artRank ? ` · 位次 ≈ ${artRank}` : ""}
                   </p>
                 )}
                 <p className="mt-1 text-xs text-gray-500">

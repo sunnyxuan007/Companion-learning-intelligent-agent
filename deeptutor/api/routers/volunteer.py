@@ -119,6 +119,10 @@ class RecommendRequest(BaseModel):
     regions: list[str] | None = None
     cities: list[str] | None = None
     batch: str = "本科批"
+    art_category: str | None = None
+    art_direction: str | None = None
+    culture_score: int | None = None
+    major_score: int | None = None
 
 
 @router.post("/volunteer/recommend", response_model=RecommendResponse)
@@ -229,6 +233,7 @@ class BrowseRequest(BaseModel):
     cities: list[str] | None = None
     batch: str = "本科批"
     art_category: str | None = None
+    art_direction: str | None = None
     culture_score: int | None = None
     major_score: int | None = None
 
@@ -239,7 +244,7 @@ async def browse_recommendations(body: BrowseRequest):
     from deeptutor.services.custom.volunteer_scorer import generate_group_recommendations
     from deeptutor.services.custom.db import get_connection
     from deeptutor.services.custom.user_settings_dao import get_user_weights
-    from deeptutor.services.custom.art_sports import is_art_sports, calc_composite_score
+    from deeptutor.services.custom.art_sports import is_art_sports, calc_composite_score, default_art_direction
 
     conn = get_connection()
     ids = [
@@ -273,17 +278,32 @@ async def browse_recommendations(body: BrowseRequest):
         "exam_category": body.exam_category,
         "score": body.score,
     }
-    if is_art_sports(body.exam_category) and body.culture_score and body.major_score:
+    is_art = is_art_sports(body.exam_category)
+    art_direction = body.art_direction
+    if is_art and not art_direction:
+        art_direction = default_art_direction(body.art_category or "美术与设计")
+    if is_art and body.culture_score and body.major_score:
         cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
-        if not cs.get("errors"):
+        if not cs.get("errors") and cs["score"]:
             profile["composite_score"] = cs["score"]
+            # 综合分 → 位次（用方向对应的一分一段表；无数据时回退类别主表）
+            from deeptutor.services.custom.admission_dao import score_to_rank_latest
+            rank_by_dir = score_to_rank_latest(
+                body.admission_province, art_direction, cs["score"])
+            if not rank_by_dir:
+                rank_by_dir = score_to_rank_latest(
+                    body.admission_province, body.art_category or "美术与设计", cs["score"])
+            if not effective_rank and rank_by_dir:
+                effective_rank = rank_by_dir
+                profile["rank"] = rank_by_dir
 
     # Build score_rank_range if score_min/score_max provided
     score_rank_range = None
     if body.score_min is not None and body.score_max is not None and body.admission_province:
         from deeptutor.services.custom.admission_dao import score_to_rank_latest
-        rank_low = score_to_rank_latest(body.admission_province, body.exam_category, max(0, body.score_min))
-        rank_high = score_to_rank_latest(body.admission_province, body.exam_category, min(750, body.score_max))
+        seg_cat = art_direction if is_art else body.exam_category
+        rank_low = score_to_rank_latest(body.admission_province, seg_cat, max(0, body.score_min))
+        rank_high = score_to_rank_latest(body.admission_province, seg_cat, min(750, body.score_max))
         if rank_low > 0 and rank_high > 0:
             score_rank_range = (min(rank_low, rank_high), max(rank_low, rank_high))
 
@@ -356,6 +376,7 @@ async def browse_recommendations(body: BrowseRequest):
 
 class CompositeScoreRequest(BaseModel):
     art_category: str = "美术与设计"
+    art_direction: str | None = None
     culture_score: int | None = None
     major_score: int | None = None
     bonus_points: int = 0
@@ -363,18 +384,27 @@ class CompositeScoreRequest(BaseModel):
 
 @router.get("/volunteer/art-sports/categories")
 async def art_sports_categories():
-    from deeptutor.services.custom.art_sports import ART_CATEGORIES, ART_SPORTS_RULES
+    from deeptutor.services.custom.art_sports import ART_CATEGORIES, ART_SPORTS_RULES, art_directions
 
-    return {"categories": ART_CATEGORIES, "rules": ART_SPORTS_RULES}
+    cats = [{**c, "directions": art_directions(c["code"])} for c in ART_CATEGORIES]
+    return {"categories": cats, "rules": ART_SPORTS_RULES}
 
 
 @router.post("/volunteer/art-sports/composite-score")
 async def composite_score(body: CompositeScoreRequest):
-    from deeptutor.services.custom.art_sports import calc_composite_score
+    from deeptutor.services.custom.art_sports import calc_composite_score, default_art_direction
 
     result = calc_composite_score(body.art_category, body.culture_score, body.major_score, body.bonus_points)
     if result.get("errors"):
         raise HTTPException(status_code=400, detail="; ".join(result["errors"]))
+    if result.get("score"):
+        direction = body.art_direction or default_art_direction(body.art_category)
+        from deeptutor.services.custom.admission_dao import score_to_rank_latest
+        rank = score_to_rank_latest("广东", direction, result["score"])
+        if not rank:
+            rank = score_to_rank_latest("广东", body.art_category, result["score"])
+        result["rank"] = rank or None
+        result["direction"] = direction
     return result
 
 

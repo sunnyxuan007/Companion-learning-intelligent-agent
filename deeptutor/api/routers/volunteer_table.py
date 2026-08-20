@@ -59,6 +59,7 @@ class CreatePlanRequest(BaseModel):
     cities: list[str] | None = None
     batch: str = "本科批"
     art_category: str | None = None
+    art_direction: str | None = None
     culture_score: int | None = None
     major_score: int | None = None
 
@@ -143,10 +144,20 @@ async def create_plan(body: CreatePlanRequest):
         raise HTTPException(status_code=400, detail=rec_result.get("message", "艺体类投档数据待补充"))
 
     if is_art:
-        from deeptutor.services.custom.art_sports import calc_composite_score
+        from deeptutor.services.custom.art_sports import calc_composite_score, default_art_direction
         cs = calc_composite_score(body.art_category or "美术与设计", body.culture_score, body.major_score)
         if cs.get("errors"):
             raise HTTPException(status_code=400, detail="; ".join(cs["errors"]))
+        if not body.rank and cs.get("score"):
+            # 综合分 → 位次（方向对应一分一段表；无数据回退类别主表）
+            from deeptutor.services.custom.admission_dao import score_to_rank_latest
+            direction = body.art_direction or default_art_direction(body.art_category or "美术与设计")
+            rank_by_dir = score_to_rank_latest(body.province, direction, cs["score"])
+            if not rank_by_dir:
+                rank_by_dir = score_to_rank_latest(body.province, body.art_category or "美术与设计", cs["score"])
+            if rank_by_dir:
+                body.rank = rank_by_dir
+                profile["rank"] = rank_by_dir
 
     if not is_art:
         rules = PROVINCE_RULES.get(body.province, PROVINCE_RULES["default"])

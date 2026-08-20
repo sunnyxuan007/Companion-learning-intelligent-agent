@@ -66,6 +66,31 @@ def art_keywords(category_code: str) -> list[str]:
     return ART_CATEGORY_KEYWORDS.get(category_code, [])
 
 
+# 类别 → 方向细分（对应一分一段表方向码；无细分时方向=类别码）
+ART_DIRECTIONS: dict[str, list[str]] = {
+    "音乐": ["音乐教育类", "音乐教育(声乐主项)", "音乐教育(器乐主项)",
+            "音乐表演(声乐)", "音乐表演(器乐)"],
+    "表（导）演": ["表(导)演(戏剧影视表演)", "表(导)演(服装表演)", "表(导)演(戏剧影视导演)"],
+    "播音与主持": ["播音与主持(普通话)", "播音与主持(粤语)"],
+    "美术与设计": ["美术与设计"],
+    "书法": ["书法"],
+    "舞蹈": ["舞蹈"],
+    "体育": ["体育"],
+    "戏曲": ["戏曲"],
+}
+
+
+def art_directions(category_code: str) -> list[str]:
+    """类别 → 可用方向列表（无方向细分时返回单元素列表）。"""
+    return ART_DIRECTIONS.get(category_code, [category_code])
+
+
+def default_art_direction(category_code: str) -> str:
+    """类别 → 默认方向。"""
+    dirs = art_directions(category_code)
+    return dirs[0] if dirs else category_code
+
+
 def is_art_sports(exam_category: str | None) -> bool:
     """是否为艺体类科类。"""
     return bool(exam_category) and exam_category == EXAM_CATEGORY_ART

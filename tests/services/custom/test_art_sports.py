@@ -5,7 +5,9 @@ from deeptutor.services.custom.art_sports import (
     ART_SPORTS_RULES,
     calc_composite_score,
     art_batch_for,
+    art_directions,
     art_keywords,
+    default_art_direction,
     is_art_sports,
 )
 
@@ -93,6 +95,32 @@ class TestArtRules:
         assert art_batch_for("艺体类") == "艺体类本科批"
         assert art_batch_for("物理") is None
         assert art_batch_for(None) is None
+
+
+class TestArtDirections:
+    def test_music_has_five_directions(self):
+        assert art_directions("音乐") == ["音乐教育类", "音乐教育(声乐主项)", "音乐教育(器乐主项)",
+                                          "音乐表演(声乐)", "音乐表演(器乐)"]
+
+    def test_directing_has_three_directions(self):
+        assert art_directions("表（导）演") == [
+            "表(导)演(戏剧影视表演)", "表(导)演(服装表演)", "表(导)演(戏剧影视导演)",
+        ]
+
+    def test_broadcast_has_two_directions(self):
+        assert art_directions("播音与主持") == ["播音与主持(普通话)", "播音与主持(粤语)"]
+
+    def test_single_direction_category(self):
+        for cat in ("美术与设计", "书法", "舞蹈", "体育", "戏曲"):
+            assert art_directions(cat) == [cat]
+
+    def test_default_direction_is_first(self):
+        assert default_art_direction("音乐") == "音乐教育类"
+        assert default_art_direction("美术与设计") == "美术与设计"
+
+    def test_unknown_category(self):
+        assert art_directions("未知") == ["未知"]
+        assert default_art_direction("未知") == "未知"
 
 
 class TestScorerArtBranch:
