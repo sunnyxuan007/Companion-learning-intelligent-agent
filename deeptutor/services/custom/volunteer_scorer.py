@@ -563,6 +563,7 @@ def score_group(
             "years": m.get("years", ""),
             "campus": m.get("campus", ""),
             "tuition": m.get("tuition", 0),
+            "medical_note": m.get("medical_note", ""),
             "admission_prob": major_prob,
             "sort_score": sort_score,
             "evidence": ev,
@@ -625,9 +626,11 @@ def generate_group_recommendations(
     from deeptutor.services.custom.db import get_connection
     from deeptutor.services.custom.admission_dao import score_to_rank_latest
     from deeptutor.services.custom.art_sports import is_art_sports, art_keywords
+    from deeptutor.services.custom.medical_dao import major_medical_status
 
     user_profile = user_profile or {}
     user_rank = user_profile.get("rank", 0) or 0
+    medical_codes = user_profile.get("medical_restrictions") or []
     is_art = is_art_sports(exam_category)
     art_kw = art_keywords(art_category) if (is_art and art_category) else []
     art_filter_sql = ""
@@ -682,7 +685,8 @@ def generate_group_recommendations(
                   COALESCE(cmn.major_name, '') as major_name,
                   COALESCE(cmn.years, '') as years,
                   COALESCE(cmn.campus, '') as campus,
-                  COALESCE(cmn.tuition, 0) as tuition
+                  COALESCE(cmn.tuition, 0) as tuition,
+                  COALESCE(cmn.medical_note, '') as medical_note
            FROM admission_ranks ar
            LEFT JOIN college_major_name cmn ON ar.college_id = cmn.college_id AND ar.major_id = cmn.major_id
            WHERE ar.province=? AND ar.exam_category=? AND ar.group_code!='' AND ar.major_id!='GEN'
@@ -748,6 +752,7 @@ def generate_group_recommendations(
             "years": r["years"] or "",
             "campus": r["campus"] or "",
             "tuition": r["tuition"] or 0,
+            "medical_note": r["medical_note"] or "",
         })
         major_best_ranks[(r["college_id"], r["group_code"], mid)] = rk
 
@@ -777,6 +782,7 @@ def generate_group_recommendations(
             }
 
     all_groups: list[dict[str, Any]] = []
+    medical_filtered = {"majors": 0, "groups": 0}
     for (cid, gc), group_ranks in group_agg.items():
         college = colleges_map.get(cid)
         if not college:
@@ -784,6 +790,19 @@ def generate_group_recommendations(
         group_prob, _ = _compute_rank_prob(user_rank, group_ranks, year_weights)
 
         majors_data = majors_per_group.get((cid, gc), [])
+        had_majors = len(majors_data) > 0
+        if medical_codes:
+            kept: list[dict[str, Any]] = []
+            for m in majors_data:
+                if major_medical_status(m.get("medical_note", ""), medical_codes) == "exclude":
+                    medical_filtered["majors"] += 1
+                else:
+                    kept.append(m)
+            majors_data = kept
+            if had_majors and not majors_data:
+                # 整组专业全部受限 → 该组移除（仅当原本有专业明细时）
+                medical_filtered["groups"] += 1
+                continue
         precomputed_major_probs: dict[str, float] = {}
         precomputed_major_evidences: dict[str, dict] = {}
         for m in majors_data:
@@ -843,6 +862,8 @@ def generate_group_recommendations(
         }
 
     result = {"tiers": selected, "total": len(all_groups)}
+    if medical_codes:
+        result["medical_filtered"] = medical_filtered
     if is_art:
         result["data_status"] = "ok"
     return result

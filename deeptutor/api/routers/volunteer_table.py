@@ -64,6 +64,7 @@ class CreatePlanRequest(BaseModel):
     culture_score: int | None = None
     major_score: int | None = None
     composite_score: float | None = None
+    medical_restrictions: list[str] | None = None
 
 
 class UpdateSlotsRequest(BaseModel):
@@ -143,6 +144,7 @@ async def create_plan(body: CreatePlanRequest):
         "exam_category": body.exam_category,
         "user_id": body.user_id,
         "score": body.score,
+        "medical_restrictions": body.medical_restrictions or [],
     }
     if is_art:
         if body.composite_score:
@@ -248,6 +250,7 @@ async def create_plan(body: CreatePlanRequest):
                     "years": m.get("years", ""),
                     "campus": m.get("campus", ""),
                     "tuition": m.get("tuition", 0),
+                    "medical_note": m.get("medical_note", ""),
                     "admission_prob": m["admission_prob"],
                     "order": len(majors) + 1,
                     "tag": m.get("tag", "可选"),
@@ -281,7 +284,7 @@ async def create_plan(body: CreatePlanRequest):
 
     plan = dao_create(
         body.user_id, body.province, body.exam_category, effective_rank, rules, slots,
-        batch=body.batch, score=body.score,
+        batch=body.batch, score=body.score, medical_restrictions=body.medical_restrictions or [],
     )
     if is_art and steady_count == 0 and safe_count == 0:
         conn = get_connection()
@@ -663,6 +666,7 @@ async def diagnose_plan(plan_id: str):
         year=2026,
         exam_category=plan.get("exam_category", "物理"),
         rank=plan.get("rank"),
+        medical_restrictions=plan.get("medical_restrictions") or [],
     )
 
     # Run conflict detection on all slots
@@ -670,7 +674,12 @@ async def diagnose_plan(plan_id: str):
     for s in slots:
         college = get_college_detail(s["college_id"]) or {}
         for m in s.get("majors", []):
-            vs = validate_all(profile, college, None)
+            major_dict = {
+                "id": m.get("major_id") or "",
+                "name": m.get("major_name", ""),
+                "medical_note": m.get("medical_note", ""),
+            }
+            vs = validate_all(profile, college, major_dict)
             for v in vs:
                 v["college_name"] = s.get("college_name", "")
                 v["major_name"] = m.get("major_name", "")

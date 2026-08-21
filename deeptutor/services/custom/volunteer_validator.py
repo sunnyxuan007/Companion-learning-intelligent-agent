@@ -26,15 +26,35 @@ def _check_medical(profile: StudentProfile, major: dict[str, Any] | None) -> lis
     if not major_id:
         return []
     affected = get_affected_major_ids(profile.medical_restrictions)
+    from deeptutor.services.custom.student_profile import MEDICAL_RESTRICTION_MAP
+    details = [f"{code}({MEDICAL_RESTRICTION_MAP.get(code, '')})" for code in profile.medical_restrictions]
     if major_id in affected:
-        from deeptutor.services.custom.student_profile import MEDICAL_RESTRICTION_MAP
-        details = [f"{code}({MEDICAL_RESTRICTION_MAP.get(code, '')})" for code in profile.medical_restrictions]
         return [{
             "type": "medical",
             "major_id": major_id,
             "message": f"体检受限({'; '.join(details)})，不建议报考该专业",
             "severity": "error",
         }]
+    # 志愿册专业备注：硬限制命中勾选码 → error；软提醒（慎重报考）→ warning
+    note = major.get("medical_note") or ""
+    if note:
+        from deeptutor.services.custom.medical_dao import classify_medical_note
+        cls = classify_medical_note(note)
+        user = set(profile.medical_restrictions)
+        if cls["hard"] & user:
+            return [{
+                "type": "medical",
+                "major_id": major_id,
+                "message": f"体检受限：{note}（{'; '.join(details)}），学校明确不招",
+                "severity": "error",
+            }]
+        if cls["soft"] & user:
+            return [{
+                "type": "medical",
+                "major_id": major_id,
+                "message": f"该专业体检建议：{note}",
+                "severity": "warning",
+            }]
     return []
 
 

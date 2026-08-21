@@ -19,13 +19,14 @@ def create_plan(
     slots: list[dict[str, Any]],
     batch: str = "本科批",
     score: float | None = None,
+    medical_restrictions: list[str] | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     plan_id = str(uuid.uuid4())
     conn = get_connection()
     conn.execute(
-        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, batch, score, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, batch, score, medical_restrictions, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             plan_id,
             user_id,
@@ -37,6 +38,7 @@ def create_plan(
             "draft",
             batch,
             score,
+            json.dumps(medical_restrictions or [], ensure_ascii=False),
             now,
             now,
         ),
@@ -175,6 +177,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     d = dict(row)
     d["province_rules"] = json.loads(d["province_rules"])
     d["slots"] = json.loads(d["slots"])
+    d["medical_restrictions"] = json.loads(d.get("medical_restrictions") or "[]")
     return d
 
 
@@ -190,8 +193,8 @@ def clone_plan(plan_id: str, new_user_id: str, name: str | None = None) -> dict[
             s["reason"] = f"{name} — {s.get('reason', '')}"
     conn = get_connection()
     conn.execute(
-        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, batch, score, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO volunteer_plans (id, user_id, province, exam_category, rank, province_rules, slots, status, batch, score, medical_restrictions, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             new_id,
             new_user_id,
@@ -203,6 +206,7 @@ def clone_plan(plan_id: str, new_user_id: str, name: str | None = None) -> dict[
             "draft",
             original.get("batch", "本科批"),
             original.get("score"),
+            json.dumps(original.get("medical_restrictions") or [], ensure_ascii=False),
             now,
             now,
         ),

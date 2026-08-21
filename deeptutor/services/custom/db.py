@@ -175,6 +175,7 @@ def init_db() -> None:
         batch TEXT DEFAULT '本科批',
         deleted_at REAL DEFAULT NULL,
         score REAL DEFAULT NULL,
+        medical_restrictions TEXT DEFAULT '[]',
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL
     );
@@ -378,6 +379,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE volunteer_plans ADD COLUMN score REAL DEFAULT NULL")
     except Exception:
         pass
+    # Migration: add medical_restrictions to volunteer_plans (体检受限项存储, 诊断用)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(volunteer_plans)").fetchall()]
+        if "medical_restrictions" not in cols:
+            conn.execute("ALTER TABLE volunteer_plans ADD COLUMN medical_restrictions TEXT DEFAULT '[]'")
+    except Exception:
+        pass
     # Migration: college code map (province code <-> national official code)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS college_code_map (
@@ -399,17 +407,20 @@ def init_db() -> None:
             tuition REAL DEFAULT 0,
             years TEXT DEFAULT '',
             campus TEXT DEFAULT '',
+            medical_note TEXT DEFAULT '',
             PRIMARY KEY (college_id, major_id)
         );
         CREATE INDEX IF NOT EXISTS idx_cmn_college ON college_major_name(college_id);
     """)
-    # Migration: add years/campus to college_major_name
+    # Migration: add years/campus/medical_note to college_major_name
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(college_major_name)").fetchall()]
         if "years" not in cols:
             conn.execute("ALTER TABLE college_major_name ADD COLUMN years TEXT DEFAULT ''")
         if "campus" not in cols:
             conn.execute("ALTER TABLE college_major_name ADD COLUMN campus TEXT DEFAULT ''")
+        if "medical_note" not in cols:
+            conn.execute("ALTER TABLE college_major_name ADD COLUMN medical_note TEXT DEFAULT ''")
     except Exception:
         pass
     conn.commit()

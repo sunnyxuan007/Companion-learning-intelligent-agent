@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import math
 
+from deeptutor.services.custom.db import get_connection
 from deeptutor.services.custom.volunteer_scorer import (
     _calc_admission_prob,
     _normalize,
     _split_tiers,
+    generate_group_recommendations,
     generate_recommendations,
     score_college_major,
 )
@@ -145,3 +147,89 @@ class TestSplitTiers:
         assert len(safe) == 1  # prob >= 0.8
         assert len(steady) == 2  # 0.45 <= prob < 0.8
         assert len(reach) == 1  # prob < 0.45
+
+
+class TestGroupRecommendationsMedicalFilter:
+    def _seed_group_data(self) -> None:
+        conn = get_connection()
+        now = 1787210000.0
+        # C001 清华 两个组：g201 化学(不招色盲色弱) + 计算机(无限制)；g202 临床医学(不招色盲色弱)
+        # C003 深大 g201 心理学(请色盲色弱慎重报考 软提醒)
+        for college, gc, mid, major_name, note, rank in [
+            ("C001", "201", "A1", "化学", "不招色盲色弱", 30000),
+            ("C001", "201", "A2", "计算机科学与技术", "", 32000),
+            ("C001", "202", "B1", "临床医学", "不招色盲色弱", 35000),
+            ("C003", "201", "C1", "心理学", "请色盲色弱的考生慎重报考", 80000),
+        ]:
+            conn.execute(
+                """INSERT OR REPLACE INTO admission_ranks
+                   (college_id, major_id, province, year, batch, min_rank, min_score, enrollment_count, exam_category, group_code)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (college, mid, "广东", 2025, "本科批", rank, 0, 0, "物理", gc),
+            )
+            conn.execute(
+                """INSERT OR REPLACE INTO college_major_name
+                   (college_id, major_id, major_name, medical_note) VALUES (?,?,?,?)""",
+                (college, mid, major_name, note),
+            )
+        conn.commit()
+        conn.close()
+
+    def _colleges_map(self) -> dict:
+        base = {
+            "dorm_score": 7.0, "city_vitality": 8.0, "cost_index": 1.0,
+            "employment_rate": 0.9, "avg_salary": 20000,
+        }
+        return {
+            "C001": {"id": "C001", "name": "清华大学", "province": "北京", **base},
+            "C003": {"id": "C003", "name": "深圳大学", "province": "广东", **base},
+        }
+
+    def test_medical_removes_matching_majors(self, custom_db: None) -> None:
+        self._seed_group_data()
+        result = generate_group_recommendations(
+            self._colleges_map(), "广东", "物理",
+            user_profile={"rank": 5000, "medical_restrictions": ["101"]},
+            top_n=100, batch="本科批",
+        )
+        tiers = result["tiers"]
+        all_groups = tiers["safe"] + tiers["steady"] + tiers["reach"]
+        # 用户色弱(101)：g201 化学剔除、保留计算机；g202 临床医学全部剔除 → 组移除
+        ids = {(g["college"]["id"], g.get("group_code")) for g in all_groups}
+        assert ("C001", "201") in ids
+        assert ("C001", "202") not in ids
+        g201 = next(g for g in all_groups if (g["college"]["id"], g.get("group_code")) == ("C001", "201"))
+        majors = {m["major_id"]: m for m in g201["majors"]}
+        assert "A1" not in majors  # 化学被剔除
+        assert "A2" in majors      # 计算机保留
+        assert result["medical_filtered"]["majors"] >= 2
+        assert result["medical_filtered"]["groups"] >= 1
+
+    def test_medical_keeps_other_restrictions(self, custom_db: None) -> None:
+        self._seed_group_data()
+        # 用户只勾选单色识别(103)：g201 化学/计算机无 103 限制 → 全保留；深大心理学保留
+        result = generate_group_recommendations(
+            self._colleges_map(), "广东", "物理",
+            user_profile={"rank": 5000, "medical_restrictions": ["103"]},
+            top_n=100, batch="本科批",
+        )
+        tiers = result["tiers"]
+        all_groups = tiers["safe"] + tiers["steady"] + tiers["reach"]
+        ids = {(g["college"]["id"], g.get("group_code")) for g in all_groups}
+        assert ("C001", "201") in ids
+        assert ("C001", "202") in ids
+        g202 = next(g for g in all_groups if (g["college"]["id"], g.get("group_code")) == ("C001", "202"))
+        assert any(m["major_id"] == "B1" for m in g202["majors"])
+
+    def test_no_restrictions_no_filter(self, custom_db: None) -> None:
+        self._seed_group_data()
+        result = generate_group_recommendations(
+            self._colleges_map(), "广东", "物理",
+            user_profile={"rank": 5000},
+            top_n=100, batch="本科批",
+        )
+        assert "medical_filtered" not in result
+        tiers = result["tiers"]
+        all_groups = tiers["safe"] + tiers["steady"] + tiers["reach"]
+        g202 = next(g for g in all_groups if (g["college"]["id"], g.get("group_code")) == ("C001", "202"))
+        assert any(m["major_id"] == "B1" for m in g202["majors"])

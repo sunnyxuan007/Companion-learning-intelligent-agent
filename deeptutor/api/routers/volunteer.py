@@ -96,6 +96,7 @@ class RecommendResponse(BaseModel):
     violations: list[dict] = []
     data_status: str | None = None
     warning: str | None = None
+    medical_filtered: dict | None = None
 
 
 class RecommendRequest(BaseModel):
@@ -240,6 +241,7 @@ class BrowseRequest(BaseModel):
     culture_score: int | None = None
     major_score: int | None = None
     composite_score: float | None = None
+    medical_restrictions: list[str] | None = None
 
 
 @router.post("/volunteer/browse", response_model=RecommendResponse)
@@ -281,6 +283,7 @@ async def browse_recommendations(body: BrowseRequest):
         "province": body.admission_province,
         "exam_category": body.exam_category,
         "score": body.score,
+        "medical_restrictions": body.medical_restrictions or [],
     }
     is_art = is_art_sports(body.exam_category)
     art_direction = body.art_direction
@@ -382,6 +385,8 @@ async def browse_recommendations(body: BrowseRequest):
 
     total = sum(len(v) for v in tiers_out.values())
     resp = RecommendResponse(tiers=tiers_out, total_count=total)
+    if result.get("medical_filtered"):
+        resp.medical_filtered = result["medical_filtered"]
     if is_art_sports(body.exam_category):
         resp.data_status = result.get("data_status", "ok")
     tiers = result.get("tiers", {})

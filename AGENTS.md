@@ -146,6 +146,16 @@ ruff check . && ruff format --check .     # 检查格式
 | `web/app/(workspace)/volunteer/page.tsx` | 艺体类方向下拉（音乐/表导/播音）+ 综合分联动显示 ≈位次；browse/create 透传 art_direction | 2026-08-19 |
 | `tests/services/custom/test_art_sports.py` | 新增 `TestArtDirections`（方向映射/默认方向/未知回退） | 2026-08-19 |
 | `deeptutor/services/custom/student_profile.py` | 体检受限清单按《指导意见》官方表3-1修正：删 501/502（身高体重非考试院数据）、新增 104（显示器色觉）/204（矫正>800度）/205（一眼失明）/306（斜视口吃）、203 改官方屈光400度文本、401 补心肌病高血压、101-103/301/302 受影响专业逐条修正 | 2026-08-20 |
+| `deeptutor/services/custom/medical_dao.py` | 志愿册专业备注 → 受限码分类规则（hard/soft）+ `extract_medical_clause`/`major_medical_status`；备注按括号单元切分提取医学片段 | 2026-08-21 |
+| `scripts/backfill_medical_notes.py` | 新建：Excel 专家版「专业备注」→ `college_major_name.medical_note` 回填（7277 行，幂等 + dry-run） | 2026-08-21 |
+| `deeptutor/services/custom/volunteer_scorer.py` | `generate_group_recommendations` 按用户勾选受限码剔除专业（`medical_note` hard 命中），整组全剔则移除组，返回 `medical_filtered` 统计 | 2026-08-21 |
+| `deeptutor/api/routers/volunteer.py` | BrowseRequest 加 `medical_restrictions`；browse 透传 + `medical_filtered` 响应 | 2026-08-21 |
+| `deeptutor/api/routers/volunteer_table.py` | CreatePlanRequest 加 `medical_restrictions`；create_plan 透传 + slot 专业带 medical_note；diagnose 读方案受限项按专业备注校验 | 2026-08-21 |
+| `deeptutor/services/custom/db.py` | `college_major_name` 加 `medical_note` 列；`volunteer_plans` 加 `medical_restrictions` 列（幂等迁移） | 2026-08-21 |
+| `deeptutor/services/custom/volunteer_table_dao.py` | create_plan/clone_plan 持久化 `medical_restrictions`；`_row_to_dict` 解析 | 2026-08-21 |
+| `deeptutor/services/custom/volunteer_validator.py` | `_check_medical` 新增专业备注 note 路径（hard→error / soft→warning），保留 36 码路径 | 2026-08-21 |
+| `web/app/(workspace)/volunteer/page.tsx` | browse/create 透传体检受限项；专业行红字显示备注限制原文（`MedicalNote` 组件）；浏览头部剔除统计提示；deps 补 medicalRestrictions | 2026-08-21 |
+| `tests/services/custom/test_medical_note.py` | 新建：备注提取/分类/`major_medical_status` 测试；scorer 组级医学过滤 + 整组剔除 + 软提醒保留测试 | 2026-08-21 |
 
 ### 新增文件
 

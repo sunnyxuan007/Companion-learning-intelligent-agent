@@ -75,6 +75,7 @@ interface SlotMajor {
   years?: string;
   campus?: string;
   tuition?: number;
+  medical_note?: string;
 }
 
 interface SlotItem {
@@ -148,6 +149,15 @@ function formatMajorMeta(mj: Partial<SlotMajor>): string {
   if (mj.campus) parts.push(mj.campus);
   if (mj.tuition) parts.push(`${mj.tuition}元/年`);
   return parts.join(" · ");
+}
+
+function MedicalNote({ note, className = "" }: { note?: string; className?: string }) {
+  if (!note) return null;
+  return (
+    <span className={`block whitespace-normal break-words text-[10px] leading-snug text-red-500 ${className}`}>
+      ⚠ {note}
+    </span>
+  );
 }
 
 /** 志愿表命名：志愿表{月日时分}（紧凑式，如 志愿表06281626）。 */
@@ -229,6 +239,7 @@ export default function VolunteerPage() {
   const [browseGroups, setBrowseGroups] = useState<GroupRecItem[]>([]);
   const [browseMode, setBrowseMode] = useState(false);
   const [browseWarning, setBrowseWarning] = useState("");
+  const [medicalFiltered, setMedicalFiltered] = useState<{ majors: number; groups: number } | null>(null);
   const [checkedMajors, setCheckedMajors] = useState<Record<string, string[]>>({});
   const [scoreRange, setScoreRange] = useState<[number, number] | null>(null);
   const [showDist, setShowDist] = useState(false);
@@ -625,6 +636,7 @@ export default function VolunteerPage() {
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           ...(effectiveScoreRange ? { score_min: effectiveScoreRange[0], score_max: effectiveScoreRange[1] } : {}),
           batch,
+          ...(medicalRestrictions.length > 0 ? { medical_restrictions: medicalRestrictions } : {}),
           ...(examCategory === "艺体类" ? {
             art_category: artCategory,
             art_direction: artDirection,
@@ -672,6 +684,7 @@ export default function VolunteerPage() {
       setBrowseGroups(allItems);
       setBrowseMode(true);
       setBrowseWarning((data.warning as string) || "");
+      setMedicalFiltered((data.medical_filtered as { majors: number; groups: number } | null) || null);
       setRecommendMsg(`共找到 ${allItems.length} 个推荐专业组`);
 
       // Default: all majors checked
@@ -686,7 +699,7 @@ export default function VolunteerPage() {
     } finally {
       setLoading(false);
     }
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput, medicalRestrictions]);
 
   const toggleMajor = useCallback((groupKey: string, majorId: string) => {
     setCheckedMajors((prev) => {
@@ -794,6 +807,7 @@ export default function VolunteerPage() {
           score: score ? parseInt(score) : null,
           bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
           batch,
+          ...(medicalRestrictions.length > 0 ? { medical_restrictions: medicalRestrictions } : {}),
           ...(examCategory === "艺体类" ? {
             art_category: artCategory,
             art_direction: artDirection,
@@ -810,7 +824,7 @@ export default function VolunteerPage() {
       setPlanError(e instanceof Error ? e.message : "请求失败");
     }
     setPlanLoading(false);
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, bonusPoints, cityTier, selectedRegions, selectedCities, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, bonusPoints, cityTier, selectedRegions, selectedCities, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput, medicalRestrictions]);
 
   const handleRangeChange = useCallback((minScore: number, maxScore: number) => {
     setScoreRange([minScore, maxScore]);
@@ -1550,6 +1564,12 @@ export default function VolunteerPage() {
               ⚠ {browseWarning}
             </div>
           )}
+          {medicalFiltered && (medicalFiltered.majors > 0 || medicalFiltered.groups > 0) && (
+            <div className="mb-3 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-600">
+              已按体检要求剔除 {medicalFiltered.majors} 个专业
+              {medicalFiltered.groups > 0 ? `、${medicalFiltered.groups} 个专业组` : ""}（未命中你勾选受限项的专业保留并红字提示）
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {(["reach", "steady", "safe"] as const).map((tier) => {
               const tierGroups = browseGroups.filter(g => g.tier === tier);
@@ -1633,6 +1653,7 @@ export default function VolunteerPage() {
                                     <span className="min-w-0 flex-1">
                                       <span className="block truncate text-xs text-gray-700">{mj.major_name}</span>
                                       <span className="block whitespace-normal break-words text-[10px] leading-snug text-gray-400">{formatMajorMeta(mj) || "\u00a0"}</span>
+                                      <MedicalNote note={mj.medical_note} />
                                     </span>
                                     {mj.tag && (
                                       <span className={`shrink-0 rounded px-1 py-0.5 text-xs ${tagColor}`}>{mj.tag}</span>
@@ -2318,6 +2339,7 @@ function PlanTierCard({
                           <span className="text-gray-700">{mj.major_name || ""}</span>
                           {mj.tag && <span className={`ml-1.5 rounded px-1 py-0.5 ${tagColor}`}>{mj.tag}</span>}
                           <span className="ml-1.5 text-[10px] text-gray-400">{formatMajorMeta(mj)}</span>
+                          <MedicalNote note={mj.medical_note} />
                         </span>
                         {mj.admission_prob != null && (
                           <span className="shrink-0 whitespace-nowrap text-gray-400">{Math.round(mj.admission_prob * 100)}%</span>
