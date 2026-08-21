@@ -24,7 +24,7 @@ class TestCheckMedical:
 
     def test_affected_major(self):
         profile = StudentProfile(province="广东", year=2026, exam_category="物理", medical_restrictions=["101"])
-        result = _check_medical(profile, {"id": "EN001", "name": "计算机"})
+        result = _check_medical(profile, {"id": "SC003", "name": "化学"})
         assert len(result) == 1
         assert result[0]["type"] == "medical"
         assert result[0]["severity"] == "error"
@@ -33,6 +33,16 @@ class TestCheckMedical:
         profile = StudentProfile(province="广东", year=2026, exam_category="物理", medical_restrictions=["301"])
         result = _check_medical(profile, {"id": "EN001", "name": "计算机"})
         assert result == []
+
+    def test_monitor_color_affects_cs(self):
+        profile = StudentProfile(province="广东", year=2026, exam_category="物理", medical_restrictions=["104"])
+        result = _check_medical(profile, {"id": "EN001", "name": "计算机科学与技术"})
+        assert len(result) == 1
+
+    def test_strabismus_affects_medicine(self):
+        profile = StudentProfile(province="广东", year=2026, exam_category="物理", medical_restrictions=["306"])
+        result = _check_medical(profile, {"id": "MD001", "name": "临床医学"})
+        assert len(result) == 1
 
 
 class TestCheckSubject:
@@ -95,7 +105,7 @@ class TestValidateAll:
             rank=5000,
         )
         college = {"id": "C001", "name": "测试大学", "gender_restriction": "male_only"}
-        major = {"id": "EN001", "name": "计算机"}
+        major = {"id": "SC003", "name": "化学"}
         result = validate_all(profile, college, major)
         types = {v["type"] for v in result}
         assert "medical" in types

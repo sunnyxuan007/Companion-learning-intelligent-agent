@@ -145,6 +145,7 @@ ruff check . && ruff format --check .     # 检查格式
 | `deeptutor/api/routers/volunteer_table.py` | CreatePlanRequest 加 `art_direction`；建表无位次时用综合分自动换算 | 2026-08-19 |
 | `web/app/(workspace)/volunteer/page.tsx` | 艺体类方向下拉（音乐/表导/播音）+ 综合分联动显示 ≈位次；browse/create 透传 art_direction | 2026-08-19 |
 | `tests/services/custom/test_art_sports.py` | 新增 `TestArtDirections`（方向映射/默认方向/未知回退） | 2026-08-19 |
+| `deeptutor/services/custom/student_profile.py` | 体检受限清单按《指导意见》官方表3-1修正：删 501/502（身高体重非考试院数据）、新增 104（显示器色觉）/204（矫正>800度）/205（一眼失明）/306（斜视口吃）、203 改官方屈光400度文本、401 补心肌病高血压、101-103/301/302 受影响专业逐条修正 | 2026-08-20 |
 
 ### 新增文件
 

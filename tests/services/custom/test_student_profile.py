@@ -89,13 +89,14 @@ class TestStudentProfileConversion:
 class TestMedicalRestrictionMap:
     def test_get_affected_majors(self):
         affected = get_affected_major_ids(["101"])
-        assert "EN001" in affected
+        assert "SC003" in affected
         assert "MD001" in affected
+        assert "EN001" not in affected
         assert "BS005" not in affected
 
     def test_get_affected_majors_multiple(self):
         affected = get_affected_major_ids(["101", "301"])
-        assert "EN001" in affected
+        assert "SC003" in affected
         assert "BS005" in affected
 
     def test_get_affected_majors_empty(self):
@@ -108,4 +109,6 @@ class TestMedicalRestrictionMap:
 
     def test_restriction_map_has_keys(self):
         assert "101" in RESTRICTION_AFFECTED_MAJORS
-        assert "501" in RESTRICTION_AFFECTED_MAJORS
+        assert "104" in RESTRICTION_AFFECTED_MAJORS
+        assert "501" not in RESTRICTION_AFFECTED_MAJORS
+        assert "502" not in RESTRICTION_AFFECTED_MAJORS
