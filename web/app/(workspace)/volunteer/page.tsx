@@ -143,6 +143,21 @@ function tierBarColor(tier: string): string {
   return tier === "reach" ? "bg-green-500" : tier === "steady" ? "bg-yellow-500" : "bg-blue-500";
 }
 
+const BATCH_GROUP_COUNTS: Record<string, number> = {
+  "艺体类本科批": 20,
+  "提前批本科-军检类": 10,
+  "提前批本科-非军检类": 20,
+  "提前批本科-教师专项": 10,
+  "提前批本科-卫生专项": 10,
+  "提前批本科-特殊类型招生": 1,
+  "提前批本科-空军海军招飞": 1,
+};
+
+function planGroupLabel(examCategory: string, batch: string): string {
+  const n = BATCH_GROUP_COUNTS[batch] ?? (examCategory === "艺体类" ? 20 : 45);
+  return `${n}格`;
+}
+
 function formatMajorMeta(mj: Partial<SlotMajor>): string {
   const parts: string[] = [];
   if (mj.years) parts.push(`${mj.years}年`);
@@ -1519,7 +1534,7 @@ export default function VolunteerPage() {
             className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-4 py-2 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
           >
             <ListOrdered className="h-4 w-4" />
-            {planLoading ? "生成中..." : `一键生成${examCategory === "艺体类" ? "20格" : "45格"}`}
+            {planLoading ? "生成中..." : `一键生成${planGroupLabel(examCategory, batch)}`}
           </button>
           <button
             onClick={() => { setChatOpen(true); setChatContext(undefined); }}

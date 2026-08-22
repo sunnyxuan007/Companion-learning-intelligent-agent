@@ -156,6 +156,11 @@ ruff check . && ruff format --check .     # 检查格式
 | `deeptutor/services/custom/volunteer_validator.py` | `_check_medical` 新增专业备注 note 路径（hard→error / soft→warning），保留 36 码路径 | 2026-08-21 |
 | `web/app/(workspace)/volunteer/page.tsx` | browse/create 透传体检受限项；专业行红字显示备注限制原文（`MedicalNote` 组件）；浏览头部剔除统计提示；deps 补 medicalRestrictions | 2026-08-21 |
 | `tests/services/custom/test_medical_note.py` | 新建：备注提取/分类/`major_medical_status` 测试；scorer 组级医学过滤 + 整组剔除 + 软提醒保留测试 | 2026-08-21 |
+| `deeptutor/services/custom/volunteer_scorer.py` | 预测口径修正：`target_year` 排除目标年投档数据 + 批次别名过滤 + 权重 0.7/0.2/0.1（近年主导） | 2026-08-23 |
+| `deeptutor/api/routers/volunteer_table.py` | 新增 `EARLY_BATCH_RULES`（军检10/非军检20/教师10/卫生10/特殊1/招飞1/艺术类提前批1）；create_plan 单志愿取总分最高；diagnose 顺序志愿跳过梯度评分 | 2026-08-23 |
+| `scripts/import_official_ranks.py` | 新建：2025 提前批全类别 + 2025 艺体统考 + 2026 提前批官方投档位次导入（2317 行，幂等 + dry-run，旧组号体系替换） | 2026-08-23 |
+| `scripts/backtest_scorer.py` | 新建：录取位次预测回测（只读，预测口径验证基准） | 2026-08-23 |
+| `web/app/(workspace)/volunteer/page.tsx` | "一键生成 N 格"按批次动态组数 | 2026-08-23 |
 
 ### 新增文件
 
@@ -1830,6 +1835,64 @@ L3 memory (profile.md / preferences.md)
 - **前端**：艺体类方向下拉（按类别过滤，默认第一项，切换类别时重置）；综合分旁显示 `· 位次 ≈ N`
 - **验证**：音乐(400,250)=512.5 综合分 → 音乐表演(声乐) 1044 / 音乐表演(器乐) 1395 / 音乐教育(声乐主项) 366 位次各异；browse 端到端 213 组、冲50/稳83/保80
 - **测试**：`TestArtDirections`（映射/默认方向/未知回退）7 例；pytest 226 passed；tsc --noEmit 无错
+
+
+### Phase 23.2 🚀 预测口径修正 + 提前批报考规则 + 官方位次导入（2026-08-23 已实施）
+
+> 状态：已完成 ✅（260 passed + tsc 通过）。核心：预测口径修正（用户拍板）+ 提前批规则表 + 2025 官方投档位次导入。
+
+#### 预测口径（用户提出，文献 + 回测双重验证）
+
+**口径**：填报 N 年 = 用 **N-1 及更早录取位次**（近年高权重）+ **N 年一分一段表** 预测；**N 年当年投档结果不得参与预测**（"用今年结果预测今年"是原引擎 bug，已修）。
+
+**论文引用**（写入记录）：
+
+| 文献 | 方法 | 出处 |
+|------|------|------|
+| 王泽卿等《基于分数线预测的多特征融合高考志愿推荐算法》 | 历年投档位次 → BP 预测当年投档位次；录取率提升 14.8%/24.1% | 计算机科学, 2022, 49(11A). doi:10.11896/jsjkx.211100266 |
+| 陆昌辉等《高考志愿录取概率模型研究》 | 录取分数分布 + 标准化 + 概率矩阵模型 | 计算机工程与应用, 2010, 46(21):14-16 |
+| A competition model for prediction of admission scores | 待测年前 4 年位次；稳定集 ES / 不稳定集 GBDT；≤3 分误差 59.7% | PLOS One. doi:10.1371/journal.pone.0274221 |
+| 专利 CN108874749B《高考志愿录取概率模型的建立方法》 | **位次分析法**：历年分数→参考年位次→待测年一分一段表→等效分数 | Google Patents |
+| 《新高考志愿推荐算法研究》 | **当年一分一段表 + 前 3 年录取位次，1:2:3 权重**（去年最重） | 中国教育信息化网 ICTEDU, 2023 |
+| 刘行兵等《融合智能审核的高考志愿推荐模型》 | **同位分预测法**：往年位次在预测年一分一段表中找对应分数 = 预测录取线；冲(0,50%]/稳(50%,80%]/保(80%,99%] | 河南师范大学, 2023 |
+
+**回测结论**（`scripts/backtest_scorer.py`，用广东 2026 实际投档做真值）：
+- 预测 2026 位次：**仅抄 2025（copy last year）最准**（物理 MAE 20714 / <20% 69.7%；历史 4445 / 76.5%）
+- 加权 0.5/0.35/0.15 明显更差（物理 MAE 24635）；**采纳 0.7/0.2/0.1**（贴合论文 1:2:3"去年最重"+ 少量平滑）
+- 位次预测天然上限：~15% 组误差 >30%（大小年/新增/计划变动），属正常噪声
+
+#### 改动
+
+| 文件 | 说明 |
+|------|------|
+| `deeptutor/services/custom/volunteer_scorer.py` | `target_year = profile.year`（默认2026）；组级/专业级 SQL 改 `year < ? AND batch IN (批次+别名)`（排除目标年 + 批次过滤，本科批次→本科批别名归一）；权重 `{target-1:0.7, target-2:0.2, target-3:0.1}`；`_calc_admission_prob`/`_compute_rank_prob` 同修 |
+| `deeptutor/api/routers/volunteer.py` | `BrowseRequest.year`；browse/recommend 院校列表查询排除目标年；艺体高位次警告改用历史年数据 |
+| `deeptutor/api/routers/volunteer_table.py` | `CreatePlanRequest.year`；**`EARLY_BATCH_RULES`**：军检10/非军检20/教师10/卫生10（平行 [3,4,3]）+ 特殊类型1/招飞1/艺术类提前批1（顺序志愿）；create_plan 单志愿取总分最高；diagnose 顺序志愿方案跳过梯度评分返回专用提示 |
+| `scripts/import_official_ranks.py` | **新建**：官方投档表导入器（2025 提前批全类别 + 2025 艺体统考 + 2026 提前批），地方码→官方码，导入前删除旧批次单元（旧数据为专家版 Excel 组号体系与官方不一致），2317 行，幂等 + dry-run |
+| `scripts/backtest_scorer.py` | **新建**：录取位次预测回测（只读），支持 --target/--w1/--w2/--w3 |
+| `web/app/(workspace)/volunteer/page.tsx` | "一键生成 N 格"按钮动态按批次取组数（BATCH_GROUP_COUNTS 映射，其余前端不动） |
+| `tests/services/custom/test_volunteer_scorer.py` | 新增目标年排除测试（`test_target_year_excluded`/`test_target_year_rows_excluded`）+ 权重测试（近年主导/目标年兜底） |
+| `tests/services/custom/test_art_sports.py` | 艺体测试种子年份 2026→2025（预测口径变更适配） |
+
+#### 数据导入结果
+
+- **2025 提前批**（评分基准）：军检 物理138/历史50 组、非军检 64/57、特殊类型 98/30、招飞 2、教师专项艺体 美术32/音乐35/体育33、体育特殊类型 1
+- **2025 普通批艺体统考**：美术与设计 434、音乐 354、体育 156、舞蹈 108、表导 101、播音 91、书法 29（此前艺体仅 2026 数据，缺 2025 基准）
+- **2026 提前批**（存档，目标年=2027 时生效）：非军检 64/60、卫生 141/18、教师 78/49 + 教师专项艺体 22/21/32
+- 补库：香港城市大学（本部 81006）建行；EXTRA_MAP 补 西安音乐 10728/港中文 81002/港城大 81006/联勤 92036 映射
+- 备份：`deeptutor_custom.db.bak_before_official_ranks_20260823_000717`
+
+#### 验证
+
+- API 冒烟：本科批 45 格不变（回归零破坏）；军检 10 格 3/4/3（样例 国防科大 g104）、非军检 20 格 6/8/6（北师大公费师范）、特殊类型 1 格（中南大学 g706）、招飞 1 格（空军航空大学）；艺体 browse 152 组用 2025 位次
+- `pytest tests/services/custom tests/tools/custom tests/capabilities` = **260 passed**；tsc 通过
+- 回测脚本复现：物理 预测2026 0.7/0.2/0.1 = MAE 23149 / <20% 65.2%；历史 MAE 4390 / <20% 77.1%
+
+#### 遗留/待办
+
+- [ ] 艺术类提前批（统考+校考/校考）：规则已入 EARLY_BATCH_RULES（1 志愿顺序志愿），数据待解析体育艺术版目录提前批段落（有计划无位次，仅清单）
+- [ ] 前端提前批规则卡（组数/两时段/报考条件/协议提示）——本轮按"前端尽量不改"原则未做
+- [ ] 提前批 2023/2024 旧行仍是专家版 Excel 组号体系，与官方 2025/2026 组号不一致（仅影响 0.2/0.1 低权重历史，暂不处理）
 
 
 ## 使用方式

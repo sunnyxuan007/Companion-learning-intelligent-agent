@@ -59,6 +59,31 @@ class TestCalcAdmissionProb:
         prob, _ = _calc_admission_prob(major, profile)
         assert prob > 0.5
 
+    def test_target_year_excluded(self) -> None:
+        # 目标年 2026：min_rank_2026 是当年结果，不得参与预测（AGENTS.md Phase 23.2）
+        major: dict = {"min_rank_2026": 500, "min_rank_2024": 1000}
+        profile: dict = {"rank": 2000, "province": "广东", "exam_category": "物理"}
+        prob, evidence = _calc_admission_prob(major, profile)
+        assert prob < 0.5  # 若 2026 混入，平均位次会被拉低到 500 附近 -> prob 会 >0.5
+        assert "2026" not in (evidence.get("years_used") or {})
+
+
+class TestComputeRankProbWeights:
+    def test_recent_year_dominates(self) -> None:
+        from deeptutor.services.custom.volunteer_scorer import _compute_rank_prob
+        # 2025 位次 1000（去年，权重0.7），2024 位次 100000（0.2），2023 位次 100000（0.1）
+        prob, ev = _compute_rank_prob(2000, {2025: 1000, 2024: 100000, 2023: 100000})
+        assert prob > 0.5
+        assert abs(ev["weighted_avg_rank"] - 30700) < 200  # 0.7*1000+0.2*100000+0.1*100000
+
+    def test_target_year_ignored_in_weights(self) -> None:
+        from deeptutor.services.custom.volunteer_scorer import _compute_rank_prob
+        # 2026 行权重为 0.1（未知年兜底），但预测时应由调用方排除目标年
+        prob, ev = _compute_rank_prob(2000, {2026: 1000, 2025: 5000})
+        # (0.1*1000 + 0.7*5000) / 0.8 = 4500
+        assert ev["weighted_avg_rank"] == 4500
+        assert prob > 0.5
+
 
 class TestCalcAdmissionProbProvince:
     def test_province_rank_uses_admission_table(self, custom_db: None) -> None:
@@ -233,3 +258,33 @@ class TestGroupRecommendationsMedicalFilter:
         all_groups = tiers["safe"] + tiers["steady"] + tiers["reach"]
         g202 = next(g for g in all_groups if (g["college"]["id"], g.get("group_code")) == ("C001", "202"))
         assert any(m["major_id"] == "B1" for m in g202["majors"])
+
+    def test_target_year_rows_excluded(self, custom_db: None) -> None:
+        """目标年(2026)的投档位次不得参与预测：仅 2026 数据的组不出现。"""
+        conn = get_connection()
+        # C001 g201: 2025 位次 30000 + 2026 位次 100（目标年，应被忽略）
+        # C003 g301: 仅 2026 位次 5000（无历史 → 不出现）
+        for college, gc, year, rank in [
+            ("C001", "201", 2025, 30000),
+            ("C001", "201", 2026, 100),
+            ("C003", "301", 2026, 5000),
+        ]:
+            conn.execute(
+                """INSERT OR REPLACE INTO admission_ranks
+                   (college_id, major_id, province, year, batch, min_rank, min_score, enrollment_count, exam_category, group_code)
+                   VALUES (?, 'GEN', '广东', ?, '本科批', ?, 0, 0, '物理', ?)""",
+                (college, year, rank, gc),
+            )
+        conn.commit()
+        conn.close()
+
+        result = generate_group_recommendations(
+            self._colleges_map(), "广东", "物理",
+            user_profile={"rank": 5000},
+            top_n=100, batch="本科批",
+        )
+        tiers = result["tiers"]
+        all_groups = tiers["safe"] + tiers["steady"] + tiers["reach"]
+        ids = {(g["college"]["id"], g.get("group_code")) for g in all_groups}
+        assert ("C001", "201") in ids     # 有 2025 历史 → 保留
+        assert ("C003", "301") not in ids  # 仅目标年数据 → 不出现

@@ -26,6 +26,18 @@ PROVINCE_RULES: dict[str, dict[str, Any]] = {
     "default": {"groups": 30, "mode": "院校", "ratio": [3, 3, 4]},
 }
 
+# 提前批各类别志愿设置（官方《2026年志愿填报通知》+《考生志愿表》，AGENTS.md Phase 23.2）
+EARLY_BATCH_RULES: dict[str, dict[str, Any]] = {
+    "提前批本科-军检类": {"groups": 10, "mode": "院校专业组", "ratio": [3, 4, 3], "parallel": True},
+    "提前批本科-非军检类": {"groups": 20, "mode": "院校专业组", "ratio": [3, 4, 3], "parallel": True},
+    "提前批本科-教师专项": {"groups": 10, "mode": "院校专业组", "ratio": [3, 4, 3], "parallel": True},
+    "提前批本科-卫生专项": {"groups": 10, "mode": "院校专业组", "ratio": [3, 4, 3], "parallel": True},
+    "提前批本科-特殊类型招生": {"groups": 1, "mode": "院校专业组", "ratio": None, "parallel": False},
+    "提前批本科-空军海军招飞": {"groups": 1, "mode": "院校专业组", "ratio": None, "parallel": False},
+    "提前批本科-艺术类统考+校考": {"groups": 1, "mode": "院校专业组", "ratio": None, "parallel": False},
+    "提前批本科-艺术类校考": {"groups": 1, "mode": "院校专业组", "ratio": None, "parallel": False},
+}
+
 
 class SlotItem(BaseModel):
     college_id: str
@@ -46,6 +58,7 @@ class SlotItem(BaseModel):
 class CreatePlanRequest(BaseModel):
     user_id: str = "default"
     province: str = "广东"
+    year: int = 2026
     exam_category: str = "物理"
     rank: int | None = None
     score: int | None = None
@@ -87,7 +100,11 @@ async def create_plan(body: CreatePlanRequest):
     from deeptutor.services.custom.art_sports import is_art_sports, ART_SPORTS_RULES
 
     is_art = is_art_sports(body.exam_category)
-    if is_art:
+    rules: dict[str, Any] | None = None
+    if body.batch in EARLY_BATCH_RULES:
+        # 提前批各类别志愿设置（军检10/非军检20/教师10/卫生10/特殊1/招飞1/艺术类提前批1）
+        rules = EARLY_BATCH_RULES[body.batch]
+    elif is_art:
         # 艺体类：本科批用官方 20 组规则；不按普通类批次名，统一"艺体类本科批"
         body.batch = "艺体类本科批"
         art_rules = ART_SPORTS_RULES["本科批"]
@@ -101,8 +118,8 @@ async def create_plan(body: CreatePlanRequest):
     ids = [
         r["college_id"]
         for r in conn.execute(
-            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
-            (body.province, body.exam_category, body.batch),
+            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND year < ?",
+            (body.province, body.exam_category, body.year),
         ).fetchall()
     ]
     conn.close()
@@ -144,6 +161,7 @@ async def create_plan(body: CreatePlanRequest):
         "exam_category": body.exam_category,
         "user_id": body.user_id,
         "score": body.score,
+        "year": body.year,
         "medical_restrictions": body.medical_restrictions or [],
     }
     if is_art:
@@ -175,7 +193,7 @@ async def create_plan(body: CreatePlanRequest):
     if is_art and rec_result.get("data_status") == "no_data":
         raise HTTPException(status_code=400, detail=rec_result.get("message", "艺体类投档数据待补充"))
 
-    if not is_art:
+    if rules is None:
         rules = PROVINCE_RULES.get(body.province, PROVINCE_RULES["default"])
     ratio = rules["ratio"]
     total_groups = rules["groups"]
@@ -184,28 +202,43 @@ async def create_plan(body: CreatePlanRequest):
     steady_pool = rec_result["tiers"].get("steady", [])
     safe_pool = rec_result["tiers"].get("safe", [])
 
-    ratio_sum = sum(ratio)
-    reach_count = min(total_groups * ratio[0] // ratio_sum, len(reach_pool))
-    steady_count = min(total_groups * ratio[1] // ratio_sum, len(steady_pool))
-    safe_count = min(total_groups * ratio[2] // ratio_sum, len(safe_pool))
+    if not ratio or total_groups == 1:
+        # 顺序志愿（特殊类型/招飞/艺术类提前批）：1 个院校专业组志愿，取总分最高
+        combined = reach_pool + steady_pool + safe_pool
+        if not combined:
+            raise HTTPException(status_code=400, detail="该批次无投档数据，暂无法生成志愿表（顺序志愿须对照招生章程）")
+        single = max(combined, key=lambda x: x["total_score"])
+        prob = single["group_prob"]
+        single_tier = "safe" if prob >= 0.65 else "steady" if prob >= 0.35 else "reach"
+        selected_pools: list[tuple[list[dict], str, int]] = [([single], single_tier, 1)]
+    else:
+        ratio_sum = sum(ratio)
+        reach_count = min(total_groups * ratio[0] // ratio_sum, len(reach_pool))
+        steady_count = min(total_groups * ratio[1] // ratio_sum, len(steady_pool))
+        safe_count = min(total_groups * ratio[2] // ratio_sum, len(safe_pool))
 
-    remaining = total_groups - (reach_count + steady_count + safe_count)
-    if remaining > 0:
-        extra = (reach_pool[reach_count:] if reach_count < len(reach_pool) else []) \
-              + (steady_pool[steady_count:] if steady_count < len(steady_pool) else []) \
-              + (safe_pool[safe_count:] if safe_count < len(safe_pool) else [])
-        extra.sort(key=lambda x: -x["total_score"])
-        for item in extra[:remaining]:
-            prob = item["group_prob"]
-            if prob >= 0.65:
-                safe_pool.insert(safe_count, item)
-                safe_count += 1
-            elif prob >= 0.35:
-                steady_pool.insert(steady_count, item)
-                steady_count += 1
-            else:
-                reach_pool.insert(reach_count, item)
-                reach_count += 1
+        remaining = total_groups - (reach_count + steady_count + safe_count)
+        if remaining > 0:
+            extra = (reach_pool[reach_count:] if reach_count < len(reach_pool) else []) \
+                  + (steady_pool[steady_count:] if steady_count < len(steady_pool) else []) \
+                  + (safe_pool[safe_count:] if safe_count < len(safe_pool) else [])
+            extra.sort(key=lambda x: -x["total_score"])
+            for item in extra[:remaining]:
+                prob = item["group_prob"]
+                if prob >= 0.65:
+                    safe_pool.insert(safe_count, item)
+                    safe_count += 1
+                elif prob >= 0.35:
+                    steady_pool.insert(steady_count, item)
+                    steady_count += 1
+                else:
+                    reach_pool.insert(reach_count, item)
+                    reach_count += 1
+        selected_pools = [
+            (reach_pool, "reach", reach_count),
+            (steady_pool, "steady", steady_count),
+            (safe_pool, "safe", safe_count),
+        ]
 
     # Look up major names
     conn = get_connection()
@@ -233,11 +266,7 @@ async def create_plan(body: CreatePlanRequest):
 
     slots: list[dict[str, Any]] = []
     order = 1
-    for pool, tier, count in [
-        (reach_pool, "reach", reach_count),
-        (steady_pool, "steady", steady_count),
-        (safe_pool, "safe", safe_count),
-    ]:
+    for pool, tier, count in selected_pools:
         for item in pool[:count]:
             college = item["college"]
             majors = []
@@ -286,11 +315,11 @@ async def create_plan(body: CreatePlanRequest):
         body.user_id, body.province, body.exam_category, effective_rank, rules, slots,
         batch=body.batch, score=body.score, medical_restrictions=body.medical_restrictions or [],
     )
-    if is_art and steady_count == 0 and safe_count == 0:
+    if is_art and len(slots) > 0 and len(steady_pool) == 0 and len(safe_pool) == 0:
         conn = get_connection()
         row = conn.execute(
-            "SELECT MAX(min_rank) AS mx FROM admission_ranks WHERE province=? AND exam_category=? AND art_category=? AND min_rank > 0 AND year = 2026",
-            (body.province, body.exam_category, body.art_category or "美术与设计"),
+            "SELECT MAX(min_rank) AS mx FROM admission_ranks WHERE province=? AND exam_category=? AND art_category=? AND min_rank > 0 AND year < ?",
+            (body.province, body.exam_category, body.art_category or "美术与设计", body.year),
         ).fetchone()
         conn.close()
         max_rank = row["mx"] if row and row["mx"] else 0
@@ -422,11 +451,12 @@ async def ai_tune_plan(plan_id: str):
     # 1. 从真实录取数据取本科目候选（与 create_plan 同一引擎）
     conn = db_conn()
     plan_batch = plan.get("batch") or "本科批"
+    target_year = int(plan.get("year", 2026) or 2026)
     ids = [
         r["college_id"]
         for r in conn.execute(
-            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
-            (plan["province"], plan["exam_category"], plan_batch),
+            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND year < ?",
+            (plan["province"], plan["exam_category"], target_year),
         ).fetchall()
     ]
     conn.close()
@@ -442,6 +472,7 @@ async def ai_tune_plan(plan_id: str):
         "province": plan["province"],
         "exam_category": plan["exam_category"],
         "user_id": user_id,
+        "year": target_year,
     }
     weights = get_user_weights(user_id)
     try:
@@ -689,6 +720,25 @@ async def diagnose_plan(plan_id: str):
     reach_slots = [s for s in slots if s["tier"] == "reach"]
     steady_slots = [s for s in slots if s["tier"] == "steady"]
     safe_slots = [s for s in slots if s["tier"] == "safe"]
+
+    # 顺序志愿（单志愿）方案：不适用冲稳保梯度评分
+    plan_batch = plan.get("batch", "")
+    early_rule = EARLY_BATCH_RULES.get(plan_batch)
+    if early_rule and not early_rule.get("parallel"):
+        prob0 = slots[0].get("group_prob", slots[0].get("admission_prob", 0)) if slots else 0
+        risk = "高" if prob0 < 0.35 else "中" if prob0 < 0.65 else "低"
+        return {
+            "grade_score": None,
+            "risk_level": risk,
+            "weakest_link_prob": prob0,
+            "safe_slots_remaining": 0,
+            "violations": violations,
+            "details": {
+                "mode": "顺序志愿",
+                "note": "顺序志愿仅 1 个院校专业组志愿，不适用冲稳保梯度评分；须在公示合格名单/取得资格，对照招生章程报考",
+                "has_all_tiers": False,
+            },
+        }
 
     # Grade scoring (0-100)
     score = 0

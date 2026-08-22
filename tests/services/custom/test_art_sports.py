@@ -157,7 +157,7 @@ class TestScorerArtBranch:
         from deeptutor.services.custom.volunteer_scorer import generate_group_recommendations
 
         conn = get_connection()
-        now = 2026
+        now = 2025  # 预测目标年默认 2026：用 2025（去年）位次作评分基准
         # 30 art groups: 10 reach (low rank), 10 steady, 10 safe (high rank)
         rank_bands = ([20] * 10) + ([100] * 10) + ([5000] * 10)
         for i, group_rank in enumerate(rank_bands):
@@ -223,7 +223,7 @@ class TestScorerArtBranch:
         from deeptutor.services.custom.volunteer_scorer import generate_group_recommendations
 
         conn = get_connection()
-        now = 2026
+        now = 2025  # 预测目标年默认 2026：用 2025 位次作评分基准
         conn.execute(
             """INSERT INTO colleges (id, name, province, city, type, level, is_public, tags,
                dorm_score, city_vitality, cost_index, employment_rate, avg_salary, region, created_at, updated_at)

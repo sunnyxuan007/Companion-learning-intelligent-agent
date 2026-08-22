@@ -164,8 +164,8 @@ async def recommend(body: RecommendRequest):
         ids = [
             r["college_id"]
             for r in conn.execute(
-                "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
-                (profile.province, profile.exam_category, body.batch),
+                "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND year < ?",
+                (profile.province, profile.exam_category, body.year),
             ).fetchall()
         ]
         conn.close()
@@ -222,6 +222,7 @@ PER_TIER_CAPS_DEFAULT = {"reach": 50, "steady": 100, "safe": 80}
 
 class BrowseRequest(BaseModel):
     admission_province: str = "广东"
+    year: int = 2026
     exam_category: str = "物理"
     user_rank: int | None = None
     score: int | None = None
@@ -256,8 +257,8 @@ async def browse_recommendations(body: BrowseRequest):
     ids = [
         r["college_id"]
         for r in conn.execute(
-            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND (year < 2026 OR batch = ?)",
-            (body.admission_province, body.exam_category, body.batch),
+            "SELECT DISTINCT college_id FROM admission_ranks WHERE province = ? AND exam_category = ? AND year < ?",
+            (body.admission_province, body.exam_category, body.year),
         ).fetchall()
     ]
     conn.close()
@@ -283,6 +284,7 @@ async def browse_recommendations(body: BrowseRequest):
         "province": body.admission_province,
         "exam_category": body.exam_category,
         "score": body.score,
+        "year": body.year,
         "medical_restrictions": body.medical_restrictions or [],
     }
     is_art = is_art_sports(body.exam_category)
@@ -393,8 +395,8 @@ async def browse_recommendations(body: BrowseRequest):
     if is_art and tiers and not tiers.get("steady") and not tiers.get("safe") and tiers.get("reach"):
         conn3 = get_connection()
         row = conn3.execute(
-            "SELECT MAX(min_rank) AS mx FROM admission_ranks WHERE province=? AND exam_category=? AND art_category=? AND min_rank > 0 AND year = 2026",
-            (body.admission_province, body.exam_category, body.art_category or "美术与设计"),
+            "SELECT MAX(min_rank) AS mx FROM admission_ranks WHERE province=? AND exam_category=? AND art_category=? AND min_rank > 0 AND year < ?",
+            (body.admission_province, body.exam_category, body.art_category or "美术与设计", body.year),
         ).fetchone()
         conn3.close()
         max_rank = row["mx"] if row and row["mx"] else 0

@@ -213,6 +213,10 @@ def _calc_admission_prob(
     exam_category = profile.get("exam_category")
     if not province or not exam_category:
         return 0.5, {"reason": "缺少省份或选考科目，使用默认概率"}
+    # 预测目标年：用目标年之前年份的录取位次，目标年当年结果不可用于预测（文献共识，
+    # 见 AGENTS.md Phase 23.2 论文引用）
+    target_year = int(profile.get("year", 2026) or 2026)
+    year_weights = {target_year - 1: 0.7, target_year - 2: 0.2, target_year - 3: 0.1}
 
     if not total_cand:
         from deeptutor.services.custom.admission_dao import (
@@ -248,6 +252,8 @@ def _calc_admission_prob(
             for r in rows:
                 rk = int(r["min_rank"]) if r.get("min_rank", 0) > 0 else 0
                 yr = int(r["year"])
+                if yr >= target_year:
+                    continue
                 if rk > 0:
                     if yr not in year_best or rk < year_best[yr]:
                         year_best[yr] = rk
@@ -259,7 +265,7 @@ def _calc_admission_prob(
                 if not yr_total and total_cand:
                     yr_total = total_cand
                 if yr_total:
-                    weight = {2026: 0.5, 2025: 0.35, 2024: 0.15}.get(yr, 0.1)
+                    weight = year_weights.get(yr, 0.1)
                     pct = rk / yr_total
                     min_ranks.extend([pct] * int(weight * 10))
                     years_data[str(yr)] = {"percentile": round(pct, 4), "total_candidates": yr_total}
@@ -267,7 +273,7 @@ def _calc_admission_prob(
             pass
 
     if not min_ranks:
-        for year in (2026, 2025, 2024):
+        for year in (target_year - 1, target_year - 2, target_year - 3):
             r = major.get(f"min_rank_{year}")
             if r and int(r) > 0:
                 yr_total = get_total_candidates(province, year, exam_category)
@@ -493,7 +499,8 @@ def _compute_rank_prob(
     if not group_ranks:
         return 0.5, {"reason": "无录取位次数据"}
     if year_weights is None:
-        year_weights = {2025: 0.5, 2024: 0.35, 2023: 0.15}
+        # 近年高权重：位次逐年稳定，回测显示几乎全押前一年最准（AGENTS.md Phase 23.2）
+        year_weights = {2025: 0.7, 2024: 0.2, 2023: 0.1}
     total_weight = 0.0
     weighted_avg_rank = 0.0
     years_used: dict[str, Any] = {}
@@ -631,6 +638,8 @@ def generate_group_recommendations(
     user_profile = user_profile or {}
     user_rank = user_profile.get("rank", 0) or 0
     medical_codes = user_profile.get("medical_restrictions") or []
+    # 预测目标年：仅用目标年之前的录取位次预测；目标年当年投档结果不可用（文献共识）
+    target_year = int(user_profile.get("year", 2026) or 2026)
     is_art = is_art_sports(exam_category)
     art_kw = art_keywords(art_category) if (is_art and art_category) else []
     art_filter_sql = ""
@@ -666,17 +675,23 @@ def generate_group_recommendations(
     elif user_profile.get("score") and user_rank:
         rank_low = score_to_rank_latest(province, exam_category, min(750, int(user_profile["score"]) + 50)) or 0
 
-    year_weights = {2025: 0.5, 2024: 0.35, 2023: 0.15}
+    year_weights = {target_year - 1: 0.7, target_year - 2: 0.2, target_year - 3: 0.1}
+
+    # 批次名逐年变化（本科批次→本科批），按别名集合过滤；提前批/艺体批名各年一致
+    batch_filters = {batch}
+    if batch == "本科批":
+        batch_filters.add("本科批次")
+    batch_ph = ",".join("?" * len(batch_filters))
 
     group_years = conn.execute(
         f"""SELECT college_id, group_code, year, MIN(min_rank) as best_rank
            FROM admission_ranks ar
            WHERE province=? AND exam_category=? AND group_code!='' AND min_rank > 0
-             AND (year < 2026 OR batch = ?)
+             AND year < ? AND batch IN ({batch_ph})
              {art_filter_sql}
            GROUP BY college_id, group_code, year
            ORDER BY college_id, group_code, year DESC""",
-        (province, exam_category, batch) + ((art_category,) if art_filter_sql else ()),
+        (province, exam_category, target_year, *batch_filters) + ((art_category,) if art_filter_sql else ()),
     ).fetchall()
 
     major_ranks = conn.execute(
@@ -690,11 +705,11 @@ def generate_group_recommendations(
            FROM admission_ranks ar
            LEFT JOIN college_major_name cmn ON ar.college_id = cmn.college_id AND ar.major_id = cmn.major_id
            WHERE ar.province=? AND ar.exam_category=? AND ar.group_code!='' AND ar.major_id!='GEN'
-             AND (ar.year < 2026 OR ar.batch = ?)
+             AND ar.year < ? AND ar.batch IN ({batch_ph})
              {art_filter_sql}
            GROUP BY ar.college_id, ar.group_code, ar.major_id
            ORDER BY ar.college_id, ar.group_code, ar.major_id""",
-        (province, exam_category, batch) + ((art_category,) if art_filter_sql else ()),
+        (province, exam_category, target_year, *batch_filters) + ((art_category,) if art_filter_sql else ()),
     ).fetchall()
         # 预取捡漏分：一次查询全部 college 的年度最低位次，填充 _bargain_cache
     _prefetch_year_ranks: dict[tuple, dict[int, int]] = {}
@@ -702,10 +717,10 @@ def generate_group_recommendations(
         f"""SELECT college_id, year, MIN(min_rank) as best_rank
            FROM admission_ranks
            WHERE province=? AND exam_category=? AND min_rank > 0
-             AND (year < 2026 OR batch = ?)
+             AND year < ?
              {art_filter_sql}
            GROUP BY college_id, year""",
-        (province, exam_category, batch) + ((art_category,) if art_filter_sql else ()),
+        (province, exam_category, target_year) + ((art_category,) if art_filter_sql else ()),
     ).fetchall():
         bkey = (r["college_id"], province, exam_category)
         _prefetch_year_ranks.setdefault(bkey, {})[int(r["year"])] = int(r["best_rank"])
@@ -718,7 +733,7 @@ def generate_group_recommendations(
            FROM admission_ranks
            WHERE province=? AND exam_category=? AND major_id='GEN' AND year=? AND min_rank > 0 AND batch=?
              {art_filter_sql}""",
-        (province, exam_category, 2026, batch) + ((art_category,) if art_filter_sql else ()),
+        (province, exam_category, target_year, batch) + ((art_category,) if art_filter_sql else ()),
     ).fetchall():
         group_rank_source[(r["college_id"], r["group_code"])] = r["rank_source"] or "official"
     conn.close()
