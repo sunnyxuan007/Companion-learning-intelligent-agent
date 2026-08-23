@@ -408,11 +408,12 @@ def init_db() -> None:
             years TEXT DEFAULT '',
             campus TEXT DEFAULT '',
             medical_note TEXT DEFAULT '',
+            requirement TEXT DEFAULT '',
             PRIMARY KEY (college_id, major_id)
         );
         CREATE INDEX IF NOT EXISTS idx_cmn_college ON college_major_name(college_id);
     """)
-    # Migration: add years/campus/medical_note to college_major_name
+    # Migration: add years/campus/medical_note/requirement to college_major_name
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(college_major_name)").fetchall()]
         if "years" not in cols:
@@ -421,6 +422,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE college_major_name ADD COLUMN campus TEXT DEFAULT ''")
         if "medical_note" not in cols:
             conn.execute("ALTER TABLE college_major_name ADD COLUMN medical_note TEXT DEFAULT ''")
+        if "requirement" not in cols:
+            conn.execute("ALTER TABLE college_major_name ADD COLUMN requirement TEXT DEFAULT ''")
     except Exception:
         pass
     conn.commit()

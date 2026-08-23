@@ -76,6 +76,7 @@ interface SlotMajor {
   campus?: string;
   tuition?: number;
   medical_note?: string;
+  requirement?: string;
 }
 
 interface SlotItem {
@@ -171,6 +172,15 @@ function MedicalNote({ note, className = "" }: { note?: string; className?: stri
   return (
     <span className={`block whitespace-normal break-words text-[10px] leading-snug text-red-500 ${className}`}>
       ⚠ {note}
+    </span>
+  );
+}
+
+function RequirementNote({ note }: { note?: string }) {
+  if (!note) return null;
+  return (
+    <span className="block whitespace-normal break-words text-[10px] leading-snug text-amber-600">
+      ℹ {note}
     </span>
   );
 }
@@ -832,7 +842,23 @@ export default function VolunteerPage() {
           } : {}),
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).detail || "生成失败");
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        if (res.status === 409 && errBody.duplicate_plan_id) {
+          // 内容与已有方案完全相同：显示已有方案并提醒，不另存
+          try {
+            const dupRes = await fetch(`/api/v1/volunteer/plan/${errBody.duplicate_plan_id}`);
+            if (dupRes.ok) {
+              setPlan(await dupRes.json());
+              setPlanMsg("");
+              setPlanError(`⚠ 与志愿表${errBody.duplicate_label || ""}完全相同，本次未另存`);
+              setPlanLoading(false);
+              return;
+            }
+          } catch { /* 拉取失败则走通用错误 */ }
+        }
+        throw new Error(errBody.detail || "生成失败");
+      }
       setPlan(await res.json());
       setPlanMsg("志愿表已生成");
     } catch (e) {
@@ -1669,6 +1695,7 @@ export default function VolunteerPage() {
                                       <span className="block truncate text-xs text-gray-700">{mj.major_name}</span>
                                       <span className="block whitespace-normal break-words text-[10px] leading-snug text-gray-400">{formatMajorMeta(mj) || "\u00a0"}</span>
                                       <MedicalNote note={mj.medical_note} />
+                                      <RequirementNote note={mj.requirement} />
                                     </span>
                                     {mj.tag && (
                                       <span className={`shrink-0 rounded px-1 py-0.5 text-xs ${tagColor}`}>{mj.tag}</span>
@@ -2355,6 +2382,7 @@ function PlanTierCard({
                           {mj.tag && <span className={`ml-1.5 rounded px-1 py-0.5 ${tagColor}`}>{mj.tag}</span>}
                           <span className="ml-1.5 text-[10px] text-gray-400">{formatMajorMeta(mj)}</span>
                           <MedicalNote note={mj.medical_note} />
+                          <RequirementNote note={mj.requirement} />
                         </span>
                         {mj.admission_prob != null && (
                           <span className="shrink-0 whitespace-nowrap text-gray-400">{Math.round(mj.admission_prob * 100)}%</span>

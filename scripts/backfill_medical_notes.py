@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import openpyxl  # noqa: E402
 
 from deeptutor.services.custom.db import get_custom_db_path  # noqa: E402
-from deeptutor.services.custom.medical_dao import extract_medical_clause  # noqa: E402
+from deeptutor.services.custom.medical_dao import extract_medical_clause, extract_requirement  # noqa: E402
 
 DEFAULT_EXCEL = "/home/sunnyxuan2/桌面/data for agent/广东2026高考志愿大数据专家版0626.xlsx"
 
@@ -42,6 +42,7 @@ def main() -> int:
     wb = openpyxl.load_workbook(args.excel, read_only=True)
     ws = wb.active
     updates: dict[tuple[str, str], str] = {}
+    req_updates: dict[tuple[str, str], str] = {}
     total_notes = 0
     batch_stats: dict[str, int] = {}
     for row in ws.iter_rows(min_row=4, values_only=True):
@@ -50,19 +51,23 @@ def main() -> int:
         note_raw = str(row[12] or "").strip() if len(row) > 12 else ""
         if not local or not mid or not note_raw:
             continue
-        clause = extract_medical_clause(note_raw)
-        if not clause:
-            continue
         off = code_map.get(local)
         if not off:
             continue
+        clause = extract_medical_clause(note_raw)
+        req = extract_requirement(note_raw)
+        if clause:
+            updates[(off, mid)] = clause
+            total_notes += 1
+        if req:
+            req_updates[(off, mid)] = req
+        if not clause and not req:
+            continue
         batch = str(row[3] or "").strip()
         batch_stats[batch] = batch_stats.get(batch, 0) + 1
-        updates[(off, mid)] = clause
-        total_notes += 1
     wb.close()
 
-    print(f"备注含体检限制行: {total_notes} | 批次分布: {batch_stats}")
+    print(f"备注含体检/要求行: {total_notes} | 批次分布: {batch_stats}")
 
     matched = 0
     unmatched = 0
@@ -84,11 +89,32 @@ def main() -> int:
                 (clause, off, mid),
             )
         matched += 1
+    req_matched = 0
+    req_existing = 0
+    req_unmatched = 0
+    for (off, mid), req in req_updates.items():
+        cur = conn.execute(
+            "SELECT requirement FROM college_major_name WHERE college_id=? AND major_id=?",
+            (off, mid),
+        ).fetchone()
+        if cur is None:
+            req_unmatched += 1
+            continue
+        if (cur["requirement"] or "") == req:
+            req_existing += 1
+            continue
+        if not args.dry_run:
+            conn.execute(
+                "UPDATE college_major_name SET requirement=? WHERE college_id=? AND major_id=?",
+                (req, off, mid),
+            )
+        req_matched += 1
     if not args.dry_run:
         conn.commit()
     conn.close()
 
-    print(f"匹配更新: {matched} | 已相同跳过: {existing} | 未匹配到 college_major_name: {unmatched}")
+    print(f"medical_note 更新: {matched} | 已相同: {existing} | 未匹配: {unmatched}")
+    print(f"requirement 更新: {req_matched} | 已相同: {req_existing} | 未匹配: {req_unmatched}")
     if args.dry_run:
         print("(--dry-run 未写入)")
     return 0

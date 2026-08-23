@@ -571,6 +571,7 @@ def score_group(
             "campus": m.get("campus", ""),
             "tuition": m.get("tuition", 0),
             "medical_note": m.get("medical_note", ""),
+            "requirement": m.get("requirement", ""),
             "admission_prob": major_prob,
             "sort_score": sort_score,
             "evidence": ev,
@@ -701,11 +702,12 @@ def generate_group_recommendations(
                   COALESCE(cmn.years, '') as years,
                   COALESCE(cmn.campus, '') as campus,
                   COALESCE(cmn.tuition, 0) as tuition,
-                  COALESCE(cmn.medical_note, '') as medical_note
+                  COALESCE(cmn.medical_note, '') as medical_note,
+                  COALESCE(cmn.requirement, '') as requirement
            FROM admission_ranks ar
            LEFT JOIN college_major_name cmn ON ar.college_id = cmn.college_id AND ar.major_id = cmn.major_id
            WHERE ar.province=? AND ar.exam_category=? AND ar.group_code!='' AND ar.major_id!='GEN'
-             AND ar.year < ? AND ar.batch IN ({batch_ph})
+             AND ar.year <= ? AND ar.batch IN ({batch_ph})
              {art_filter_sql}
            GROUP BY ar.college_id, ar.group_code, ar.major_id
            ORDER BY ar.college_id, ar.group_code, ar.major_id""",
@@ -768,6 +770,7 @@ def generate_group_recommendations(
             "campus": r["campus"] or "",
             "tuition": r["tuition"] or 0,
             "medical_note": r["medical_note"] or "",
+            "requirement": r["requirement"] or "",
         })
         major_best_ranks[(r["college_id"], r["group_code"], mid)] = rk
 

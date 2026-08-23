@@ -30,6 +30,37 @@ _MEDICAL_KEYWORD = re.compile(
     r"糖尿病|癫痫|心脏病|传染病|慢性病|肝功能"
 )
 _MEDICAL_DROP = re.compile(r"政审|面试|户籍|就业|加试|定向|男生|女生")
+_REQUIREMENT_KEYWORD = re.compile(r"政审|面试|只招|男生|女生|培养|年龄|考核|体测|体能|语种|签约|协议|服务|户籍|定向|招飞|学员|须|英语|俄语|日语|数学|成绩|不低于|第一志愿|时段")
+
+
+def extract_requirement(note: str) -> str:
+    """从备注中提取非医学报考要求（性别/政审面试/培养方向/年龄等），无则返回空串。
+
+    与 extract_medical_clause 互补：医学限制入 medical_note（红字），
+    其余报考要求入 requirement（琥珀提示）。
+    """
+    if not note:
+        return ""
+    units = re.findall(r"[（(]([^）)]*)[）)]|[^（(）)]+", note)
+    kept: list[str] = []
+    for u in units:
+        u = u.strip()
+        if not u:
+            continue
+        if _MEDICAL_KEYWORD.search(u):
+            # 含医学关键词的单元拆分，只保留非医学要求子句
+            for sub in re.split(r"[；;，,]", u):
+                sub = sub.strip()
+                if not sub or _MEDICAL_KEYWORD.search(sub):
+                    continue
+                if _REQUIREMENT_KEYWORD.search(sub):
+                    kept.append(sub)
+        elif _REQUIREMENT_KEYWORD.search(u):
+            # 纯要求单元：保留（去校区/学制等）
+            if re.search(r"校区|校本部|学制|学费|住宿费|主校区|新校区", u):
+                continue
+            kept.append(u)
+    return "；".join(dict.fromkeys(kept))
 
 
 def _trim_unit(u: str) -> str:

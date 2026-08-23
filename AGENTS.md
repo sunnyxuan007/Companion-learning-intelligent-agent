@@ -1894,6 +1894,16 @@ L3 memory (profile.md / preferences.md)
 - [ ] 前端提前批规则卡（组数/两时段/报考条件/协议提示）——本轮按"前端尽量不改"原则未做
 - [ ] 提前批 2023/2024 旧行仍是专家版 Excel 组号体系，与官方 2025/2026 组号不一致（仅影响 0.2/0.1 低权重历史，暂不处理）
 
+#### Phase 23.2 追加（2026-08-23 后续修复）
+
+| # | 改动 | 文件 | 说明 |
+|---|------|------|------|
+| 1 | scorer major_ranks 融合 2026 计划 | `volunteer_scorer.py` | major_ranks SQL 改 `year <= target`（2026 专业明细 + 历史位次）；major_min_rank 改 `MIN(CASE WHEN year<target THEN min_rank END)` |
+| 2 | fix_advance_groups 恢复专业行 | `scripts/fix_advance_groups.py` | 非军检247/卫生159/教师127=533 行；2025 GEN 官方组号→2026组号 映射151/未解决136 |
+| 3 | requirement 提取 | `medical_dao.py` + `backfill_medical_notes.py` | `extract_requirement(note)` 提取政审/面试/性别/培养等非医学限制；6480 行回填 |
+| 4 | requirement 全链路透传 | `volunteer_scorer.py` / `volunteer_table.py` / `page.tsx` | scorer majors → slot majors → 前端 amber `RequirementNote` 组件 |
+| 5 | 预测口径 batch 别名归一 | `volunteer_scorer.py` | `batch IN (batch, '本科批次')` 处理历史年 batch='本科批次' vs target='本科批' |
+
 
 ## 使用方式
 

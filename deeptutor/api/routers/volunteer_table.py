@@ -280,6 +280,7 @@ async def create_plan(body: CreatePlanRequest):
                     "campus": m.get("campus", ""),
                     "tuition": m.get("tuition", 0),
                     "medical_note": m.get("medical_note", ""),
+                    "requirement": m.get("requirement", ""),
                     "admission_prob": m["admission_prob"],
                     "order": len(majors) + 1,
                     "tag": m.get("tag", "可选"),
@@ -306,9 +307,14 @@ async def create_plan(body: CreatePlanRequest):
     from deeptutor.services.custom.volunteer_table_dao import find_duplicate
     dup = find_duplicate(body.user_id, slots, rank=effective_rank, exam_category=body.exam_category)
     if dup:
-        raise HTTPException(
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
             status_code=409,
-            detail=f"与志愿表{_plan_label(dup)}完全相同，未保存",
+            content={
+                "detail": f"与志愿表{_plan_label(dup)}完全相同，未保存",
+                "duplicate_plan_id": dup["id"],
+                "duplicate_label": _plan_label(dup),
+            },
         )
 
     plan = dao_create(
