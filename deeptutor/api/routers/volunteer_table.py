@@ -832,7 +832,7 @@ async def diagnose_plan(plan_id: str):
 @router.get("/volunteer/plan/{plan_id}/export-pdf")
 async def export_plan_pdf_endpoint(plan_id: str):
     try:
-        from deeptutor.services.custom.export_service import export_plan_pdf as do_export
+        from deeptutor.services.custom.export_service import export_plan_official_pdf as do_export
 
         pdf_bytes = do_export(plan_id)
         return Response(content=pdf_bytes, media_type="application/pdf", headers={
@@ -845,7 +845,7 @@ async def export_plan_pdf_endpoint(plan_id: str):
 @router.get("/volunteer/plan/{plan_id}/export-excel")
 async def export_plan_excel_endpoint(plan_id: str):
     try:
-        from deeptutor.services.custom.export_service import export_plan_excel as do_export
+        from deeptutor.services.custom.export_service import export_plan_official_excel as do_export
 
         xlsx_bytes = do_export(plan_id)
         return Response(content=xlsx_bytes, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={

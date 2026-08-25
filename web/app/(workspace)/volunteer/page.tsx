@@ -1908,10 +1908,10 @@ export default function VolunteerPage() {
               <Trash2 className="h-4 w-4" /> 清空
             </button>
             <a href={`/api/v1/volunteer/plan/${plan.id}/export-pdf`} download className="flex items-center gap-1.5 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-              <Download className="h-4 w-4" /> PDF
+              <Download className="h-4 w-4" /> 志愿表PDF
             </a>
             <a href={`/api/v1/volunteer/plan/${plan.id}/export-excel`} download className="flex items-center gap-1.5 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-              <Download className="h-4 w-4" /> Excel
+              <Download className="h-4 w-4" /> 志愿表Excel
             </a>
           </div>
 

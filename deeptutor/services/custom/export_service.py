@@ -200,3 +200,108 @@ def export_plan_excel(plan_id: str) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ============================================================
+# 官方志愿样表导出（Phase 23.6）：模板填充 + soffice 转 PDF
+# ============================================================
+
+OFFICIAL_TEMPLATE = "data/user/custom/templates/2026_gd_volunteer_form.xlsx"
+
+# 官方样表批次段（行号已实测）：段名 → (起始行, 最大志愿数)
+OFFICIAL_SEGMENTS: dict[str, tuple[int, int]] = {
+    "提前批本科-空军海军招飞": (6, 1),
+    "提前批本科-军检类": (7, 10),
+    "提前批本科-艺术类统考+校考": (17, 1),
+    "提前批本科-艺术类校考": (17, 1),
+    "提前批本科-戏曲类": (18, 1),
+    "提前批本科-非军检类": (19, 20),
+    "提前批本科-教师专项": (39, 10),
+    "提前批本科-卫生专项": (49, 10),
+    "艺体类本科批": (81, 20),
+    "本科批": (101, 45),
+}
+
+# 特殊类型子行（按院校 special_type 定位）
+OFFICIAL_SPECIAL_ROWS = {"高水平运动队": 59, "综合评价": 60}
+
+
+def _major_code(major_id: str) -> str:
+    """专业代码：艺体类 major_id 为 {组号}-{代码} 命名空间，去前缀取组内代码。"""
+    mid = str(major_id or "")
+    return mid.split("-")[-1] if mid else ""
+
+
+def export_plan_official_excel(plan_id: str) -> bytes:
+    """按官方样表模板填入方案 slots → xlsx bytes（布局/合并/样式全保留）。"""
+    import openpyxl
+    from pathlib import Path
+
+    plan = get_plan(plan_id)
+    if not plan:
+        raise ValueError("Plan not found")
+
+    template = Path(__file__).resolve().parents[3] / OFFICIAL_TEMPLATE
+    if not template.exists():
+        raise FileNotFoundError(f"官方样表模板缺失: {template}")
+
+    wb = openpyxl.load_workbook(str(template))
+    ws = wb["Sheet1"]
+
+    batch = plan.get("batch", "本科批")
+    slots: list[dict] = plan.get("slots", [])
+    slots = sorted(slots, key=lambda s: s.get("order", 0))
+
+    if batch == "提前批本科-特殊类型招生":
+        # 特殊类型段：按第一志愿院校的 special_type 定位高水平运动队/综合评价子行
+        st = ""
+        if slots:
+            from deeptutor.services.custom.db import get_connection
+            conn = get_connection()
+            row = conn.execute(
+                "SELECT special_type FROM colleges WHERE id=?", (slots[0].get("college_id", ""),)
+            ).fetchone()
+            conn.close()
+            st = (row["special_type"] if row else "") or ""
+        start = OFFICIAL_SPECIAL_ROWS.get(st, OFFICIAL_SPECIAL_ROWS["综合评价"])
+        rows = [start]
+    else:
+        start, cap = OFFICIAL_SEGMENTS.get(batch, OFFICIAL_SEGMENTS["本科批"])
+        rows = list(range(start, start + cap))
+
+    for i, slot in enumerate(slots[: len(rows)]):
+        r = rows[i]
+        ws.cell(r, 6).value = slot.get("province_code") or ""      # F 院校代码（广东招生代码）
+        ws.cell(r, 7).value = slot.get("college_name") or ""        # G 院校名称
+        gc = str(slot.get("group_code") or "")
+        ws.cell(r, 8).value = gc                                    # H 院校专业组代码
+        majors = slot.get("majors", [])
+        for j, m in enumerate(majors[:6]):
+            ws.cell(r, 9 + j).value = _major_code(m.get("major_id"))  # I-N 专业1-6
+        ws.cell(r, 15).value = "服从" if slot.get("adjustable", True) else "不服从"  # O
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def export_plan_official_pdf(plan_id: str) -> bytes:
+    """官方样表 xlsx → soffice 转 PDF bytes。"""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    xlsx_bytes = export_plan_official_excel(plan_id)
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "form.xlsx"
+        src.write_bytes(xlsx_bytes)
+        # soffice --headless --convert-to pdf --outdir <dir> <file>
+        subprocess.run(
+            ["soffice", "--headless", "--convert-to", "pdf", "--outdir", td, str(src)],
+            check=True, timeout=120,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        pdf = Path(td) / "form.pdf"
+        if not pdf.exists():
+            raise RuntimeError("soffice PDF 转换失败")
+        return pdf.read_bytes()
