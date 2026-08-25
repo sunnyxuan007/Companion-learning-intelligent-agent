@@ -53,6 +53,8 @@ class SlotItem(BaseModel):
     province_code: str = ""
     bargain_score: float = 0
     rank_source: str = "official"
+    reference_rank: float = 0
+    reference_source: str = ""
 
 
 class CreatePlanRequest(BaseModel):
@@ -78,6 +80,7 @@ class CreatePlanRequest(BaseModel):
     major_score: int | None = None
     composite_score: float | None = None
     medical_restrictions: list[str] | None = None
+    special_type: str | None = None
 
 
 class UpdateSlotsRequest(BaseModel):
@@ -186,6 +189,7 @@ async def create_plan(body: CreatePlanRequest):
             score_rank_range=body.score_rank_range,
             batch=body.batch,
             art_category=body.art_category,
+            special_type=body.special_type,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成推荐失败: {str(e)}")
@@ -300,6 +304,8 @@ async def create_plan(body: CreatePlanRequest):
                 "reason": f"{'冲刺' if tier == 'reach' else '稳妥' if tier == 'steady' else '保底'}志愿推荐",
                 "majors": majors,
                 "bargain_score": item.get("bargain_score", 0),
+                "reference_rank": item.get("reference_rank", 0),
+                "reference_source": item.get("reference_source", ""),
             })
             order += 1
 

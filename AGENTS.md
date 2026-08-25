@@ -1904,6 +1904,162 @@ L3 memory (profile.md / preferences.md)
 | 4 | requirement 全链路透传 | `volunteer_scorer.py` / `volunteer_table.py` / `page.tsx` | scorer majors → slot majors → 前端 amber `RequirementNote` 组件 |
 | 5 | 预测口径 batch 别名归一 | `volunteer_scorer.py` | `batch IN (batch, '本科批次')` 处理历史年 batch='本科批次' vs target='本科批' |
 
+### Phase 23.3 🚀 选科四选二限制 + 提前批/艺体专业明细回填（2026-08-24 已实施）
+
+> 状态：已完成 ✅（260 passed + tsc 通过）。用户三问：① 选科四选二无限制 ② 提前批/本科批部分组无专业 ③ 提前批应只含本科。
+
+#### 问题1：再选科目四选二限制 ✅
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| `toggleElective` 加数量上限 | `page.tsx` | 已选 2 门时第 3 门忽略；允许取消；UI 未选 checkbox 置灰 + `已选满 2 门` 提示；`electiveSubjects` 仅前端用，未传后端 |
+
+#### 问题2：提前批/艺体专业明细回填（数据源限制诊断 + 实际回填）
+
+**根因诊断**（按评分引擎口径 pool=year<2026 GEN / major=year<=2026 专业行）：
+- 本科批（普通类）：物理/历史 **0 缺** ✓（已解析完毕）
+- **提前批特殊类型**：物理83/历史20=103 组（100%缺）——`parse_advance_catalog.py` 从未成功运行 + 特殊类型页标题无「提前批·本科」被 `detect_batch` 提前 return None 跳过
+- 提前批军检 14 / 非军检 27 组缺——2026 目录已无这些组（公安类 g11x-12x 计划调整）
+- **艺体类本科批 581 组缺**（pool 1265）——2025 投档组号 ≠ 2026 目录组号（跨年组号不一致，同提前批「未解决136」）
+
+**回填**：
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| 修复 `detect_batch` 识别特殊类型页 | `scripts/parse_advance_catalog.py` | 特殊类型页标题「提前批·特殊类型招生·高水平运动队」不含「提前批·本科」→ 加 `if "特殊类型招生" in j and "专业组" in j: return 特殊类型`；写入 batch 实际以 2025 GEN 组为准（gen_groups），detect_batch 只决定页取舍 |
+| 实跑 parse_advance_catalog | — | 写 343 组/587 专业行（rank_source='catalog'，year=2026），净补 +3 组（军检1/非军检1/特殊1）——其余与 fix_advance_groups 已补重复（幂等跳过）；提前批覆盖率：军检 93%、非军检 82%、卫生/教师/招飞 100% |
+| 新建 `scripts/map_art_group_codes.py` | 艺体组号映射（新建） | 复用 fix_advance_groups 数据层映射模式：2025 缺组 → 2026 同校同类别专业组，计划数匹配（唯一候选直接接受 / 多候选 Δplan≤max(3,30%) + 最佳次佳可分）；目标组在 2025 有位次则跳过（防双位次混淆）；新建 year=2025 GEN 行（2026 组号 + 2025 官方位次，rank_source='mapped'）+ 删除旧 2025 组号行 |
+| 艺体映射结果 | — | **补 210 组**（美术114/体育24/音乐23/播音19/表导10/舞蹈7/书法4），艺体缺组 581→**371**（无源119+冲突133+歧义86+置信33 保守跳过）；抽查正确（北工大 g204→g206 设计学类计划8=8、中央财经 g205→g208 视觉传达3=3） |
+
+**剩余缺组（数据源限制，非解析遗漏）**：
+- 特殊类型 704/706/708/710 等（综合评价/强基）：2026 目录本不列专业明细
+- 公安/警官类 g11x-12x（军检）：2026 目录已无这些组（2025 有计划、2026 调整）
+- 艺体 371：无源（2026 目录无该院校艺体组）/ 冲突（目标组 2025 已有位次）/ 歧义（多候选计划数不可分）
+- 这些组浏览时显示「无细分专业」（GEN-only），可接受
+
+#### 问题3：专科数据审计 ✅
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| 确认前端无专科选项 | `page.tsx` | 批次下拉仅本科相关（本科批/艺体类本科批/7个提前批本科） |
+| 确认推荐引擎已过滤 | `volunteer_scorer.py` | 所有入口 `batch IN` 过滤，`专科批次`/`提前批专科-*` 不在任何本科批次 batch_filters → 不混入 |
+| **修复 chat 工具泄漏** | `volunteer_chat_service.py` | `admission_query` SQL 加 `AND a.batch NOT LIKE '%专科%' AND a.batch != '专科批次'`（原按 min_rank 升序取 10 会混入专科） |
+| 专科数据保留 | — | 用户决策保留不动（推荐引擎已过滤，未来可扩专科功能） |
+
+#### 备份
+
+- `deeptutor_custom.db.bak_before_advance_catalog_20260824_145709`（parse_advance_catalog 前）
+- `deeptutor_custom.db.bak_before_art_group_map_20260824_*`（艺体映射前）
+
+#### 验证
+
+- 艺体 browse（美术与设计 rank=8000）safe 80 组（有专业43/无专业37），映射组正常带专业
+- `pytest tests/services/custom tests/tools/custom tests/capabilities` = **260 passed**
+- `tsc --noEmit` 通过
+
+### Phase 23.4 🚀 提前批规则完善（2026-08-24 已实施）
+
+> 状态：已完成 ✅（260 passed + tsc 通过）。背景：用户要求提前批规则完善——特殊类型功能细分 + 全部提前批组别规则卡 + 无专业提示。
+> 执行中关键修正：用户指出 **2026 物理/历史目录里特殊类型组 100% 有专业**（此前误判为"数据源缺失"）。根因：**2025 特殊类型投档组号（g702/g704/g706…）与 2026 目录组号（g701-704，每校重新编号）完全重构**（北大 2025 g705→2026 g701/g702；中山 2025 g710/711/715→2026 g701-704），评分引擎 pool（2025 位次）匹配不上 2026 专业行 → 误显"无专业"。
+
+#### 1. 特殊类型专业明细修复（数据层重建，评分引擎零改动）✅
+
+- **`scripts/rebuild_special_type_groups.py`（新建，已实跑）**：展示单位 = 2026 特殊类型 GEN 组（物理64+历史52，g701-704，**计划数取 2026**）；位次 = **每校 2025 特殊类型院校级最低位次**（跨科类取 MIN——2025/2026 科类归属可漂移，如北大 2025 归历史、2026 归物理+历史）；为每个 2026 组写 year=2025 `mapped` 行（2026 组号 + 2025 位次 + 2026 计划）；删除 2025 特殊类型 GEN 旧组行（g7xx 重构前，114 行）
+- **数据现状**：2026 特殊类型 GEN 组 116 个**全部能 JOIN 专业**（用户判断正确）；仅 **30 校有 2025 院校位次**（41 所 2026 新增/无历史位次，如清华 2025 未在广东特殊类型招生）
+- **`volunteer_scorer.py`**：特殊类型分支改造——① 补充 2026 组为池（无 2025 位次的组保留，`group_ranks={}` → `_compute_rank_prob` 返回中性 0.5 + reason"无录取位次数据"）② `rank_source='no_history'` 标记无位次组 ③ 加 `special_type` 过滤参数
+
+#### 2. 特殊类型功能细分（综合评价/高水平运动队筛选）✅
+
+| 文件 | 改动 |
+|------|------|
+| `db.py` | 幂等 `ALTER TABLE colleges ADD COLUMN special_type TEXT DEFAULT ''`（同 `city_tier` 迁移模式） |
+| `scripts/seed_special_type.py`（新建，已实跑） | 按 **2026 全量专业行反推**（不再限 16 所）：体育专业→高水平运动队、普通专业→综合评价，覆盖 **57 所**（综合评价 14：北外/复旦/上纽/西浦/昆杜/浙大/西湖/武理工/中山/华工/南科大/UIC/港中深/深北莫；高水平运动队 43：北大/清华/北航/北理工/华师/苏大等） |
+| `volunteer_scorer.py` | `generate_group_recommendations` 加 `special_type: str\|None`；特殊类型 batch 下按 `colleges.special_type` 过滤 group_agg |
+| `volunteer.py` | BrowseRequest 加 `special_type` 透传（recommend 端点走旧 `generate_recommendations` 不受影响） |
+| `volunteer_table.py` | CreatePlanRequest 加 `special_type` 透传（create_plan；ai_tune 默认全部） |
+| `page.tsx` | 特殊类型批次细分下拉（综合评价/高水平运动队/全部）+ 说明"综合评价 14 所 / 高水平运动队 43 所已分类，其余未分类请选全部"；三处请求体透传 `special_type` |
+
+#### 3. 提前批规则卡（全部组别，不细分只提示）✅
+
+- `page.tsx` 新增 `EARLY_BATCH_INFO` 常量 + 批次下拉下渲染：
+  - 军检类：平行 10 组 · 需政审/面试/体检（军队/武警/公安/司法/消防/民航招飞院校）
+  - 非军检类：平行 20 组 · 公费师范/农林/小语种等，部分定向协议
+  - 教师专项：平行 10 组 · 毕业后定向任教
+  - 卫生专项：平行 10 组 · 订单定向免费培养+服务 6 年
+  - 特殊类型：顺序 1 组 · 含综合评价/高水平运动队，两者不得兼报，须资格+达特殊类型招生录取控制线
+  - 招飞：顺序 1 组 · 需招飞体检/政审
+
+#### 4. 无专业提示 ✅
+
+- `page.tsx`：浏览卡片 + 志愿表 slot majors 为空时显示"无细分专业（专业明细以院校招生章程为准）"
+
+#### 不做
+
+- 艺术类提前批（DB 无 `提前批本科-艺术类*` 数据）
+- 军检/非军检/教师/卫生/招飞细分（用户决策：不细分只规则卡；非军检专业归类不干净）
+
+#### 备份
+
+- `deeptutor_custom.db.bak_before_special_type_20260824_225603`（可回滚）
+
+#### 验证
+
+- 端到端（curl）：特殊类型 browse 全部 → steady 42（no_history prob=0.5 带专业）+ safe 18（official prob=0.95）；`special_type=综合评价` → 11 校（中山/北外/UIC/华工/南科大/复旦/武理工/浙大/深北莫/西浦等）；`special_type=高水平运动队` → 41 校（北大/北航/北理工等）；create_plan 综合评价 → 北外 g702（阿拉伯语/印地语）；高水平运动队 → 北科大 g702（体育教育 prob=0.79）
+- `pytest tests/services/custom tests/tools/custom tests/capabilities` = **260 passed**；`tsc --noEmit` 通过
+
+#### Phase 23.4 追加（2026-08-25 无位次组处理修正）
+
+> 用户两连修正：① 2025 录取规则与 2026 不同——**2025 特殊类型含高校专项**（经平行投档、有投档表 84 所），**2026 特殊类型仅综合评价/高水平运动队**（院校自主、无投档位次），且 2026 高校专项已移到本科批；② **2025 特殊类型投档附件（高校专项）位次不适用于 2026 综合评价/高水平运动队**（机制不同），原"补导高校专项 + 优先作参考"方案作废。
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| 清理 2025 特殊类型 mapped 行 | `admission_ranks`（SQL） | 删除 rebuild 写入的 32 行 mapped（高校专项位次，规则不适用，防误用）；2025 特殊类型清零 |
+| 参考位次改用本科批 | `volunteer_scorer.py` | `is_special` 分支预查 `ref_rank_map`（每校 **2025 本科批院校级最低位次**，batch IN 本科批次/本科批）；no_history 组附 `reference_rank` + `reference_source='benke'`；排序键 `(is_no_history, -total_score)` 降级 |
+| browse 透传参考字段 | `volunteer.py` | tiers_out 构造补 `reference_rank`/`reference_source`（否则被丢弃） |
+| create_plan 透传 | `volunteer_table.py` | SlotItem + slot 构建补 `reference_rank`/`reference_source` |
+| 前端徽标分级 | `page.tsx` | `rank_source==='no_history'` → 不渲染百分比/概率条，改琥珀徽标「新设·无历史位次参考」+（有 ref）「参考统招位次 {n}」/（无 ref，如港中深）「2026 首次在粤特殊类型招生」；浏览卡片 + 志愿表 slot 双处 |
+
+**验证**：综合评价 browse → 华工 2478 / 复旦 88 / 中山 1182 / 南科大 3232（benke）；港中深 ref=0（显示"首次在粤"）；高水平运动队 41 组全有参考位次（北大 27 / 清华 13 / 北航 493）；`pytest` **260 passed** + `tsc --noEmit`；备份 `bak_before_no_history_20260825_*`
+
+**遗留**：无 2026 综合评价/高水平运动队真实位次（结构性缺失——院校自主不投档），统一 no_history + 参考统招位次锚点；2025 目录（OCR 差）暂不解析
+
+### Phase 24 🚀 创新点与文献支撑（评审方向，规划中）
+
+> 状态：规划中，待团队确认后实施。详见 `data for agent/创新点与文献支撑.docx`（独立文档）。
+
+**论文主线建议**：新高考平行志愿下专业组级录取位次的混合分层预测与滑档风险评估
+
+#### 创新方向
+
+| # | 方向 | 核心思路 | 对标文献 | Gap（我们做） |
+|---|------|---------|---------|-------------|
+| 1 | 混合分层位次预测 | 稳定/波动/趋势组检测 + 计划数显式归一化 + per-regime 预测 | Chen et al. 2022 *PLOS ONE* (稳定/不稳定组+GBDT+K-Means) | 专业组级（非院校级）；计划数归一化；概率校准 |
+| 2 | 模拟投档 + 滑档风险 | 真实数据跑投档算法 → P(第k志愿录取)、P(滑档) | Larroucau et al. 2025 *NBER w34164* (个性化概率干预→+44%); Abdulkadiroğlu & Sönmez 2003 *AER* (机制设计) | 从静态概率→过程仿真 |
+| 3 | 确定性引擎+LLM 消融 | 算数值不幻觉 + LLM 只做表达；A/B/C/D 逐层量化 | GAOKAO-Bench arXiv:2305.12474 等 | 无志愿决策支持基准（空白） |
+
+#### 已验证文献
+
+| # | 文献 | DOI/出处 | 引用点 |
+|---|------|---------|--------|
+| 1 | Chen, Peng, Gao & Cai 2022 | 10.1371/journal.pone.0274221 *PLOS ONE* | 稳定/不稳定组分层+竞争模型；创新1直接蓝本 |
+| 2 | Zhang & Wang 2018 | arXiv:1809.06362 (ORS) | 位次模型 7分内 91%，支撑等位次法 |
+| 3 | Abdulkadiroğlu & Sönmez 2003 | 10.1257/000282803322157061 *AER* 93(3) | 机制设计理论基座（平行志愿博弈论） |
+| 4 | Larroucau, Rios, Fabre & Neilson 2025 | 10.3386/w34164 *NBER w34164* | 个性化概率干预→+44%未录取者获分配 |
+| 5 | 王泽卿 2022 / 刘行兵 2023 / ICTEDU 2023 | 中文 | 0.7/0.2/0.1权重+冲稳保划分支撑 |
+| 6 | Platt 1999; Zadrozny & Elkan 2002 | 经典 | 概率校准工具箱 |
+| 7 | GAOKAO-Bench arXiv:2305.12474 | arXiv | LLM能做高考题但无志愿决策基准→空白 |
+
+#### 学术空白立论
+
+arXiv 检索 "gaokao/college admission + ML" 结果几乎全是 LLM 评测基准，无一篇做新高考专业组级志愿决策支持；中文文献停留院校级/旧高考/纯预测。→ 我们的系统是空白点的完整落地。
+
+#### 待讨论决策项
+
+- [ ] 目标刊物/竞赛等级（决定方法深度 vs 系统完整性侧重）
+- [ ] 数据是否可公开（广东省真实投档数据）
+- [ ] 创新1 做真 GBDT 还是轻量规则混合（后者更可复现）
+- [ ] 创新2 投档模拟是否纳入本轮
+- [ ] Ye "Choice"（AGENTS 引用 +24.4pp）引用前需再核
 
 ## 使用方式
 

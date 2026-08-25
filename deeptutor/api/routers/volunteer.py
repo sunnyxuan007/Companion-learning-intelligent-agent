@@ -126,6 +126,7 @@ class RecommendRequest(BaseModel):
     culture_score: int | None = None
     major_score: int | None = None
     composite_score: float | None = None
+    special_type: str | None = None
 
 
 @router.post("/volunteer/recommend", response_model=RecommendResponse)
@@ -243,6 +244,7 @@ class BrowseRequest(BaseModel):
     major_score: int | None = None
     composite_score: float | None = None
     medical_restrictions: list[str] | None = None
+    special_type: str | None = None
 
 
 @router.post("/volunteer/browse", response_model=RecommendResponse)
@@ -339,6 +341,7 @@ async def browse_recommendations(body: BrowseRequest):
         score_rank_range=score_rank_range,
         batch=body.batch,
         art_category=body.art_category,
+        special_type=body.special_type,
     )
 
     # 广东招生代码（按省份）：official_code -> province_code
@@ -381,6 +384,8 @@ async def browse_recommendations(body: BrowseRequest):
                 "detail_scores": g.get("detail_scores", {}),
                 "bargain_score": g.get("bargain_score", 0),
                 "majors": g.get("majors", []),
+                "reference_rank": g.get("reference_rank", 0),
+                "reference_source": g.get("reference_source", ""),
             }
             for g in items
         ]

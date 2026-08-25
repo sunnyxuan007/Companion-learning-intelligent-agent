@@ -91,6 +91,9 @@ def detect_batch(text: str) -> str | None:
     j = j.replace(".", "·").replace(",", "·").replace("，", "·")
     if "提前批·专科" in j:
         return "提前批专科-定向军士"
+    # 特殊类型页标题形如「提前批·特殊类型招生·高水平运动队」，不含「提前批·本科」
+    if "特殊类型招生" in j and "专业组" in j:
+        return "提前批本科-特殊类型招生"
     if "提前批·本科" not in j:
         return None
     for marker, batch in BATCH_MARKERS:

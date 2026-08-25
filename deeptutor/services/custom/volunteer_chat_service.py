@@ -121,6 +121,7 @@ class VolunteerChatService:
                     FROM admission_ranks a
                     JOIN colleges c ON a.college_id = c.id
                     WHERE a.province=? AND a.exam_category=?
+                      AND a.batch NOT LIKE '%专科%' AND a.batch != '专科批次'
                     ORDER BY a.min_rank ASC LIMIT 10
                 """, (province, exam_category)).fetchall()
                 conn.close()

@@ -94,6 +94,8 @@ interface SlotItem {
   majors: SlotMajor[];
   bargain_score?: number;
   rank_source?: string;
+  reference_rank?: number;
+  reference_source?: string;
 }
 
 interface PlanData {
@@ -137,6 +139,8 @@ interface GroupRecItem {
   detail_scores: Record<string, number>;
   bargain_score?: number;
   rank_source?: string;
+  reference_rank?: number;
+  reference_source?: string;
   tier: "reach" | "steady" | "safe";
 }
 
@@ -152,6 +156,15 @@ const BATCH_GROUP_COUNTS: Record<string, number> = {
   "提前批本科-卫生专项": 10,
   "提前批本科-特殊类型招生": 1,
   "提前批本科-空军海军招飞": 1,
+};
+
+const EARLY_BATCH_INFO: Record<string, { mode: string; groups: number; condition: string }> = {
+  "提前批本科-军检类": { mode: "平行志愿", groups: 10, condition: "需政审/面试/体检（军队、武警、公安、司法、消防、民航招飞院校）" },
+  "提前批本科-非军检类": { mode: "平行志愿", groups: 20, condition: "国家公费师范生、农林、小语种等；部分专业有定向就业协议" },
+  "提前批本科-教师专项": { mode: "平行志愿", groups: 10, condition: "毕业后定向任教，须签订协议" },
+  "提前批本科-卫生专项": { mode: "平行志愿", groups: 10, condition: "订单定向免费培养，毕业后到定向县服务 6 年" },
+  "提前批本科-特殊类型招生": { mode: "顺序志愿", groups: 1, condition: "含①高水平运动队②综合评价，两者不得兼报；须在公示合格名单且高考成绩达特殊类型招生录取控制线" },
+  "提前批本科-空军海军招飞": { mode: "顺序志愿", groups: 1, condition: "须通过招飞体检、政审、心理选拔" },
 };
 
 function planGroupLabel(examCategory: string, batch: string): string {
@@ -215,6 +228,7 @@ export default function VolunteerPage() {
   const [province, setProvince] = useState("广东");
   const [examCategory, setExamCategory] = useState("物理");
   const [batch, setBatch] = useState("本科批");
+  const [specialType, setSpecialType] = useState("");
   const [electiveSubjects, setElectiveSubjects] = useState<string[]>([]);
   const [bonusPoints, setBonusPoints] = useState("");
   const [gender, setGender] = useState("");
@@ -539,7 +553,11 @@ export default function VolunteerPage() {
 
   const toggleElective = (subject: string) => {
     setElectiveSubjects((prev) =>
-      prev.includes(subject) ? prev.filter((s) => s !== subject) : [...prev, subject]
+      prev.includes(subject)
+        ? prev.filter((s) => s !== subject)
+        : prev.length >= 2
+          ? prev // 四选二：最多选 2 门，超限忽略
+          : [...prev, subject]
     );
   };
 
@@ -661,6 +679,7 @@ export default function VolunteerPage() {
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
           ...(effectiveScoreRange ? { score_min: effectiveScoreRange[0], score_max: effectiveScoreRange[1] } : {}),
           batch,
+          ...(batch === "提前批本科-特殊类型招生" && specialType ? { special_type: specialType } : {}),
           ...(medicalRestrictions.length > 0 ? { medical_restrictions: medicalRestrictions } : {}),
           ...(examCategory === "艺体类" ? {
             art_category: artCategory,
@@ -694,6 +713,8 @@ export default function VolunteerPage() {
             detail_scores: (item.detail_scores || {}) as Record<string, number>,
             bargain_score: item.bargain_score as number | undefined,
             rank_source: item.rank_source as string | undefined,
+            reference_rank: item.reference_rank as number | undefined,
+            reference_source: item.reference_source as string | undefined,
             tier: tierKey as "reach" | "steady" | "safe",
           });
         }
@@ -781,6 +802,7 @@ export default function VolunteerPage() {
             score: score ? parseInt(score) : null,
             bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
             batch,
+            ...(batch === "提前批本科-特殊类型招生" && specialType ? { special_type: specialType } : {}),
             ...(examCategory === "艺体类" ? {
               art_category: artCategory,
               art_direction: artDirection,
@@ -832,6 +854,7 @@ export default function VolunteerPage() {
           score: score ? parseInt(score) : null,
           bonus_points: bonusPoints ? parseInt(bonusPoints) : 0,
           batch,
+          ...(batch === "提前批本科-特殊类型招生" && specialType ? { special_type: specialType } : {}),
           ...(medicalRestrictions.length > 0 ? { medical_restrictions: medicalRestrictions } : {}),
           ...(examCategory === "艺体类" ? {
             art_category: artCategory,
@@ -1248,28 +1271,67 @@ export default function VolunteerPage() {
                 艺体类本科批：1 个平行志愿组共 20 个院校专业组 · 每组最多 6 个专业 · 不得兼报普通类
               </p>
             )}
-            {batch !== "本科批" && batch !== "艺体类本科批" && (
+            {batch === "提前批本科-特殊类型招生" && (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-amber-800">特殊类型细分：</span>
+                  <select
+                    value={specialType}
+                    onChange={(e) => setSpecialType(e.target.value)}
+                    className="rounded border border-amber-300 bg-white px-2 py-1 text-xs text-amber-800"
+                  >
+                    <option value="">全部特殊类型</option>
+                    <option value="综合评价">综合评价</option>
+                    <option value="高水平运动队">高水平运动队</option>
+                  </select>
+                  <span className="text-[11px] text-amber-700">
+                    （综合评价 14 所 / 高水平运动队 43 所已分类，其余未分类院校请选"全部"）
+                  </span>
+                </div>
+              </div>
+            )}
+            {EARLY_BATCH_INFO[batch] && (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800">
+                <div><span className="font-medium">{EARLY_BATCH_INFO[batch].mode}</span> · {EARLY_BATCH_INFO[batch].groups} 个院校专业组</div>
+                <div className="mt-0.5">{EARLY_BATCH_INFO[batch].condition}</div>
+              </div>
+            )}
+            {batch !== "本科批" && batch !== "艺体类本科批" && !EARLY_BATCH_INFO[batch] && (
               <p className="mt-1 text-xs text-amber-600">
                 提前批：军检/卫生/教师等专项有特定报考条件与就业限制，请仔细核对招生章程
               </p>
             )}
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700">再选科目</label>
+            <label className="block text-sm font-medium text-gray-700">
+              再选科目{examCategory !== "艺体类" && (
+                <span className="ml-1 text-xs font-normal text-gray-400">
+                  （化学/生物/政治/地理，四选二·最多选 2 门）
+                  {electiveSubjects.length >= 2 && <span className="text-amber-600">·已选满 2 门</span>}
+                </span>
+              )}
+            </label>
             <div className="mt-1 flex flex-wrap gap-2">
               {examCategory === "艺体类" ? (
                 <span className="text-xs text-gray-400">艺体类不分物理/历史，无再选科目要求</span>
-              ) : (["化学", "生物", "地理", "政治"].map((subj) => (
-                <label key={subj} className="flex items-center gap-1 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={electiveSubjects.includes(subj)}
-                    onChange={() => toggleElective(subj)}
-                    className="accent-blue-600"
-                  />
-                  <span className="text-sm">{subj}</span>
-                </label>
-              )))}
+              ) : (["化学", "生物", "地理", "政治"].map((subj) => {
+                const disabled = electiveSubjects.length >= 2 && !electiveSubjects.includes(subj);
+                return (
+                  <label
+                    key={subj}
+                    className={`flex items-center gap-1 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={electiveSubjects.includes(subj)}
+                      disabled={disabled}
+                      onChange={() => toggleElective(subj)}
+                      className="accent-blue-600"
+                    />
+                    <span className="text-sm">{subj}</span>
+                  </label>
+                );
+              }))}
             </div>
           </div>
           <div>
@@ -1652,13 +1714,26 @@ export default function VolunteerPage() {
                               )}
                             </div>
                           </div>
-                          <div className="mt-1.5 flex items-center gap-2">
-                            <div className="h-1 flex-1 rounded-full bg-gray-200">
-                              <div className={`h-1 rounded-full ${tierBarColor(tier)}`}
-                                style={{ width: `${Math.round(g.group_prob * 100)}%` }} />
+                          {g.rank_source === "no_history" ? (
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-700" title="2026 综合评价/高水平运动队为院校自主录取，无投档位次；参考位次仅为该校难度锚点">
+                                新设·无历史位次参考
+                              </span>
+                              {g.reference_rank ? (
+                                <span className="text-[11px] text-gray-500">参考统招位次 {g.reference_rank}</span>
+                              ) : (
+                                <span className="text-[11px] text-gray-400">2026 首次在粤特殊类型招生</span>
+                              )}
                             </div>
-                            <span className="shrink-0 text-xs font-semibold text-blue-600">{Math.round(g.group_prob * 100)}%</span>
-                          </div>
+                          ) : (
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <div className="h-1 flex-1 rounded-full bg-gray-200">
+                                <div className={`h-1 rounded-full ${tierBarColor(tier)}`}
+                                  style={{ width: `${Math.round(g.group_prob * 100)}%` }} />
+                              </div>
+                              <span className="shrink-0 text-xs font-semibold text-blue-600">{Math.round(g.group_prob * 100)}%</span>
+                            </div>
+                          )}
 
                           {/* 组内专业列表 */}
                           {g.majors && g.majors.length > 0 ? (
@@ -1712,7 +1787,7 @@ export default function VolunteerPage() {
                               })}
                             </div>
                           ) : (
-                            <div className="mt-2 text-xs text-gray-400 italic">无细分专业</div>
+                            <div className="mt-2 text-xs text-gray-400 italic">无细分专业（专业明细以院校招生章程为准）</div>
                           )}
 
                           <button
@@ -2346,6 +2421,9 @@ function PlanTierCard({
                   {slot.rank_source === "estimated" && (
                     <span className="shrink-0 rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-600" title="该专业组无官方投档位次，位次为预估">预估位次</span>
                   )}
+                  {slot.rank_source === "no_history" && (
+                    <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700" title="2026 综合评价/高水平运动队院校自主录取，无投档位次">新设·无历史位次</span>
+                  )}
                   <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${slot.tier === "reach" ? "bg-green-100 text-green-700" : slot.tier === "steady" ? "bg-yellow-100 text-yellow-700" : "bg-blue-100 text-blue-700"}`}>
                     #{slot.order}
                   </span>
@@ -2361,13 +2439,28 @@ function PlanTierCard({
                 </div>
               </div>
               <div className="mt-1.5 flex items-center gap-2">
-                <div className="h-1 flex-1 rounded-full bg-gray-200">
-                  <div className={`h-1 rounded-full ${tierBarColor(slot.tier)}`}
-                    style={{ width: `${Math.round(groupProb * 100)}%` }} />
-                </div>
-                <span className="shrink-0 text-xs font-semibold text-blue-600">
-                  {Math.round(groupProb * 100)}%
-                </span>
+                {slot.rank_source === "no_history" ? (
+                  <>
+                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-700" title="2026 综合评价/高水平运动队院校自主录取，无投档位次；参考位次仅为难度锚点">
+                      新设·无历史位次参考
+                    </span>
+                    {slot.reference_rank ? (
+                      <span className="text-[11px] text-gray-500">参考统招位次 {slot.reference_rank}</span>
+                    ) : (
+                      <span className="text-[11px] text-gray-400">2026 首次在粤特殊类型招生</span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="h-1 flex-1 rounded-full bg-gray-200">
+                      <div className={`h-1 rounded-full ${tierBarColor(slot.tier)}`}
+                        style={{ width: `${Math.round(groupProb * 100)}%` }} />
+                    </div>
+                    <span className="shrink-0 text-xs font-semibold text-blue-600">
+                      {Math.round(groupProb * 100)}%
+                    </span>
+                  </>
+                )}
               </div>
               {slot.majors && slot.majors.length > 0 && (
                 <div className="mt-2 space-y-1">
@@ -2391,6 +2484,9 @@ function PlanTierCard({
                     );
                   })}
                 </div>
+              )}
+              {(!slot.majors || slot.majors.length === 0) && (
+                <div className="mt-2 text-xs text-gray-400 italic">无细分专业（专业明细以院校招生章程为准）</div>
               )}
               <label className="mt-2 flex items-center gap-1.5 text-xs text-gray-500">
                 <input type="checkbox" defaultChecked={slot.adjustable !== false} className="accent-blue-600" />

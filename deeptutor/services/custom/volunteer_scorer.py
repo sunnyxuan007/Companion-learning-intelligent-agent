@@ -630,6 +630,7 @@ def generate_group_recommendations(
     per_tier_caps: dict[str, int] | None = None,
     batch: str = "本科批",
     art_category: str | None = None,
+    special_type: str | None = None,
 ) -> dict[str, Any]:
     from deeptutor.services.custom.db import get_connection
     from deeptutor.services.custom.admission_dao import score_to_rank_latest
@@ -738,12 +739,55 @@ def generate_group_recommendations(
         (province, exam_category, target_year, batch) + ((art_category,) if art_filter_sql else ()),
     ).fetchall():
         group_rank_source[(r["college_id"], r["group_code"])] = r["rank_source"] or "official"
+
+    # 特殊类型：以 2026 组为展示单位（组号与 2025 完全重构，见 Phase 23.4）；
+    # 无 2025 位次的组保留（专业来自 2026 目录，概率中性），special_type 过滤按院校。
+    # 2025 特殊类型投档位次（高校专项）与 2026 综合评价/高水平运动队规则不同（见 Phase 23.4），
+    # 不做位次映射；参考位次用该校 2025 本科批院校级位次（参考锚点，非录取概率）。
+    is_special = batch == "提前批本科-特殊类型招生"
+    special_2026_groups: set[tuple[str, str]] = set()
+    special_type_schools: set[str] = set()
+    ref_rank_map: dict[str, int] = {}
+    if is_special:
+        special_2026_groups = {
+            (r["college_id"], r["group_code"])
+            for r in conn.execute(
+                """SELECT college_id, group_code FROM admission_ranks
+                   WHERE province=? AND exam_category=? AND year=? AND batch=? AND major_id='GEN' AND group_code!=''""",
+                (province, exam_category, target_year, batch),
+            ).fetchall()
+        }
+        if special_type:
+            special_type_schools = {
+                r["id"] for r in conn.execute(
+                    "SELECT id FROM colleges WHERE special_type=?", (special_type,)
+                ).fetchall()
+            }
+        # 参考锚点：每校 2025 本科批院校级最低位次（2025 规则 vs 2026 不同，仅作难度参考）
+        ref_rank_map = {
+            r["college_id"]: int(r["best_rank"])
+            for r in conn.execute(
+                """SELECT college_id, MIN(min_rank) AS best_rank FROM admission_ranks
+                   WHERE province=? AND year=? AND major_id='GEN' AND min_rank>0
+                     AND batch IN ('本科批次', '本科批')
+                   GROUP BY college_id""",
+                (province, target_year - 1),
+            ).fetchall()
+        }
     conn.close()
 
     group_agg: dict[tuple[str, str], dict[int, int]] = defaultdict(dict)
     for r in group_years:
         key = (r["college_id"], r["group_code"])
         group_agg[key][int(r["year"])] = int(r["best_rank"])
+
+    if is_special:
+        # 补充无历史位次的 2026 特殊类型组（专业来自 2026 目录，概率中性 0.5）
+        for key in special_2026_groups:
+            if key not in group_agg:
+                group_agg[key] = {}
+        if special_type and special_type_schools:
+            group_agg = {k: v for k, v in group_agg.items() if k[0] in special_type_schools}
 
     if rank_low > 0:
         # 仅保留某年存在 min_rank >= rank_low 的组（分数区间过滤）
@@ -846,6 +890,13 @@ def generate_group_recommendations(
         )
         result["college"] = college
         result["rank_source"] = group_rank_source.get((cid, gc), "official")
+        if is_special and not group_ranks:
+            # 无历史特殊类型位次（2026 综合评价/高水平运动队院校自主，无投档位次）
+            result["rank_source"] = "no_history"
+            ref = ref_rank_map.get(cid, 0)
+            if ref > 0:
+                result["reference_rank"] = ref
+                result["reference_source"] = "benke"
         bargain = _calc_bargain_score(cid, user_profile)
         result["bargain_score"] = round(bargain, 4)
         all_groups.append(result)
@@ -861,7 +912,8 @@ def generate_group_recommendations(
             reach.append(g)
 
     for lst in (safe, steady, reach):
-        lst.sort(key=lambda x: -x["total_score"])
+        # no_history 组（无历史位次）排有数据组之后
+        lst.sort(key=lambda x: (x.get("rank_source") == "no_history", -x["total_score"]))
 
     if per_tier_caps:
         selected = {

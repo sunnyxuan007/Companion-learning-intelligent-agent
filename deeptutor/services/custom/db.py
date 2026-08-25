@@ -358,6 +358,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE colleges ADD COLUMN official_code TEXT DEFAULT ''")
     except Exception:
         pass
+    # Migration: special_type (Phase 23.4 特殊类型细分——综合评价/高水平运动队)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(colleges)").fetchall()]
+        if "special_type" not in cols:
+            conn.execute("ALTER TABLE colleges ADD COLUMN special_type TEXT DEFAULT ''")
+    except Exception:
+        pass
     # Migration: add batch column to volunteer_plans (Phase 20 提前批支持)
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(volunteer_plans)").fetchall()]
