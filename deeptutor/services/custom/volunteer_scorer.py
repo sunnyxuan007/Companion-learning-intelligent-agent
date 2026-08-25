@@ -631,6 +631,7 @@ def generate_group_recommendations(
     batch: str = "本科批",
     art_category: str | None = None,
     special_type: str | None = None,
+    program_type: str | None = None,
 ) -> dict[str, Any]:
     from deeptutor.services.custom.db import get_connection
     from deeptutor.services.custom.admission_dao import score_to_rank_latest
@@ -660,13 +661,25 @@ def generate_group_recommendations(
 
     conn = get_connection()
 
-    major_category_ids: set[str] | None = None
+    # 学科门类过滤（Phase 23.5）：走 college_major_category 关联表（多归属），
+    # 语义 = 选中门类下真实存在的 (college_id, major_id) 专业行；旧 majors.id 匹配组内序号已废弃
+    major_category_keys: set[tuple[str, str]] | None = None
     if major_categories:
         placeholders = ",".join("?" * len(major_categories))
-        major_category_ids = {
-            r["id"] for r in conn.execute(
-                f"SELECT id FROM majors WHERE category IN ({placeholders})",
+        major_category_keys = {
+            (r["college_id"], r["major_id"]) for r in conn.execute(
+                f"SELECT college_id, major_id FROM college_major_category WHERE category IN ({placeholders})",
                 major_categories,
+            ).fetchall()
+        }
+
+    # 办学特征过滤（normal/中外合作/试验班）
+    program_type_keys: set[tuple[str, str]] | None = None
+    if program_type and program_type != "全部":
+        program_type_keys = {
+            (r["college_id"], r["major_id"]) for r in conn.execute(
+                "SELECT college_id, major_id FROM college_major_name WHERE program_type=?",
+                (program_type,),
             ).fetchall()
         }
 
@@ -801,7 +814,10 @@ def generate_group_recommendations(
     for r in major_ranks:
         key = (r["college_id"], r["group_code"])
         mid = r["major_id"]
-        if major_category_ids and mid not in major_category_ids:
+        pair = (r["college_id"], mid)
+        if major_category_keys is not None and pair not in major_category_keys:
+            continue
+        if program_type_keys is not None and pair not in program_type_keys:
             continue
         if art_kw and not any(k in (r["major_name"] or "") for k in art_kw):
             continue
@@ -819,10 +835,15 @@ def generate_group_recommendations(
         major_best_ranks[(r["college_id"], r["group_code"], mid)] = rk
 
     valid_groups: set[tuple[str, str]] = set(group_agg.keys())
-    if major_category_ids:
+    # 学科门类/办学特征筛选：组内任一专业命中即保留；组内专业全部被筛掉则移除整组
+    if major_category_keys is not None or program_type_keys is not None:
         valid_groups = {
             (cid, gc) for (cid, gc) in valid_groups
-            if any(m["major_id"] in major_category_ids for m in majors_per_group.get((cid, gc), []))
+            if any(
+                (major_category_keys is None or ((cid, m["major_id"]) in major_category_keys))
+                and (program_type_keys is None or ((cid, m["major_id"]) in program_type_keys))
+                for m in majors_per_group.get((cid, gc), [])
+            )
         }
         group_agg = {k: v for k, v in group_agg.items() if k in valid_groups}
 

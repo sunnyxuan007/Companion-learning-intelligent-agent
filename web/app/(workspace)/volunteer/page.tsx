@@ -229,6 +229,7 @@ export default function VolunteerPage() {
   const [examCategory, setExamCategory] = useState("物理");
   const [batch, setBatch] = useState("本科批");
   const [specialType, setSpecialType] = useState("");
+  const [programType, setProgramType] = useState("");
   const [electiveSubjects, setElectiveSubjects] = useState<string[]>([]);
   const [bonusPoints, setBonusPoints] = useState("");
   const [gender, setGender] = useState("");
@@ -674,6 +675,7 @@ export default function VolunteerPage() {
           level: level || null,
           strategies: strategies.length > 0 ? strategies : ["default"],
           major_categories: majorCategories.length > 0 ? majorCategories : null,
+          ...(programType ? { program_type: programType } : {}),
           ...(cityTier ? { city_tier: cityTier } : {}),
           ...(selectedRegions.length > 0 ? { regions: selectedRegions } : {}),
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
@@ -745,7 +747,7 @@ export default function VolunteerPage() {
     } finally {
       setLoading(false);
     }
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput, medicalRestrictions]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, cityTier, selectedRegions, selectedCities, scoreRange, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput, medicalRestrictions, programType]);
 
   const toggleMajor = useCallback((groupKey: string, majorId: string) => {
     setCheckedMajors((prev) => {
@@ -848,6 +850,7 @@ export default function VolunteerPage() {
           level: level || null,
           strategies: strategies.length > 0 ? strategies : ["default"],
           major_categories: majorCategories.length > 0 ? majorCategories : null,
+          ...(programType ? { program_type: programType } : {}),
           ...(cityTier ? { city_tier: cityTier } : {}),
           ...(selectedRegions.length > 0 ? { regions: selectedRegions } : {}),
           ...(selectedCities.length > 0 ? { cities: selectedCities } : {}),
@@ -888,7 +891,7 @@ export default function VolunteerPage() {
       setPlanError(e instanceof Error ? e.message : "请求失败");
     }
     setPlanLoading(false);
-  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, bonusPoints, cityTier, selectedRegions, selectedCities, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput, medicalRestrictions]);
+  }, [province, examCategory, batch, rank, level, strategies, majorCategories, score, bonusPoints, cityTier, selectedRegions, selectedCities, artCategory, artDirection, cultureScore, majorScore, artCompositeScore, artRankInput, medicalRestrictions, programType]);
 
   const handleRangeChange = useCallback((minScore: number, maxScore: number) => {
     setScoreRange([minScore, maxScore]);
@@ -1507,6 +1510,20 @@ export default function VolunteerPage() {
                 </button>
               )}
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">办学特征</label>
+            <select
+              value={programType}
+              onChange={(e) => setProgramType(e.target.value)}
+              className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none"
+            >
+              <option value="">全部</option>
+              <option value="normal">普通</option>
+              <option value="中外合作">中外合作</option>
+              <option value="试验班">试验班</option>
+            </select>
+            <p className="mt-1 text-[11px] text-gray-400">可与学科门类组合筛选（如"工学"+"中外合作"=工学类合作项目）</p>
           </div>
           <div className="md:col-span-4">
             <label className="block text-sm font-medium text-gray-700 mb-1">城市</label>

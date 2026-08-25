@@ -127,6 +127,7 @@ class RecommendRequest(BaseModel):
     major_score: int | None = None
     composite_score: float | None = None
     special_type: str | None = None
+    program_type: str | None = None
 
 
 @router.post("/volunteer/recommend", response_model=RecommendResponse)
@@ -245,6 +246,7 @@ class BrowseRequest(BaseModel):
     composite_score: float | None = None
     medical_restrictions: list[str] | None = None
     special_type: str | None = None
+    program_type: str | None = None
 
 
 @router.post("/volunteer/browse", response_model=RecommendResponse)
@@ -342,6 +344,7 @@ async def browse_recommendations(body: BrowseRequest):
         batch=body.batch,
         art_category=body.art_category,
         special_type=body.special_type,
+        program_type=body.program_type,
     )
 
     # 广东招生代码（按省份）：official_code -> province_code
@@ -672,12 +675,11 @@ async def holland_assess(body: dict):
 
 @router.get("/volunteer/major-categories")
 async def list_major_categories():
-    from deeptutor.services.custom.db import get_connection
-    conn = get_connection()
-    cats = [r["category"] for r in conn.execute(
-        "SELECT DISTINCT category FROM majors WHERE category IS NOT NULL ORDER BY category"
-    ).fetchall()]
-    conn.close()
+    # Phase 23.5：固定 15 类（12 学科门类 + 交叉学科 + 中外合作 + 试验班 + 其他），
+    # 不再从 majors 表拉（该表 category 体系已废弃）
+    cats = ["哲学", "经济学", "法学", "教育学", "文学", "历史学",
+            "理学", "工学", "农学", "医学", "管理学", "艺术学", "交叉学科",
+            "中外合作", "试验班", "其他"]
     return {"categories": cats}
 
 

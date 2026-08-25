@@ -81,6 +81,7 @@ class CreatePlanRequest(BaseModel):
     composite_score: float | None = None
     medical_restrictions: list[str] | None = None
     special_type: str | None = None
+    program_type: str | None = None
 
 
 class UpdateSlotsRequest(BaseModel):
@@ -190,6 +191,7 @@ async def create_plan(body: CreatePlanRequest):
             batch=body.batch,
             art_category=body.art_category,
             special_type=body.special_type,
+            program_type=body.program_type,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成推荐失败: {str(e)}")

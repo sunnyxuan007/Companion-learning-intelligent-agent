@@ -416,11 +416,20 @@ def init_db() -> None:
             campus TEXT DEFAULT '',
             medical_note TEXT DEFAULT '',
             requirement TEXT DEFAULT '',
+            program_type TEXT DEFAULT 'normal',
             PRIMARY KEY (college_id, major_id)
         );
         CREATE INDEX IF NOT EXISTS idx_cmn_college ON college_major_name(college_id);
+        -- 专业-学科门类多归属（一专业可属多门类，Phase 23.5）
+        CREATE TABLE IF NOT EXISTS college_major_category (
+            college_id TEXT NOT NULL,
+            major_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            PRIMARY KEY (college_id, major_id, category)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cmc_cat ON college_major_category(category);
     """)
-    # Migration: add years/campus/medical_note/requirement to college_major_name
+    # Migration: add years/campus/medical_note/requirement/program_type to college_major_name
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(college_major_name)").fetchall()]
         if "years" not in cols:
@@ -431,6 +440,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE college_major_name ADD COLUMN medical_note TEXT DEFAULT ''")
         if "requirement" not in cols:
             conn.execute("ALTER TABLE college_major_name ADD COLUMN requirement TEXT DEFAULT ''")
+        if "program_type" not in cols:
+            conn.execute("ALTER TABLE college_major_name ADD COLUMN program_type TEXT DEFAULT 'normal'")
     except Exception:
         pass
     conn.commit()
