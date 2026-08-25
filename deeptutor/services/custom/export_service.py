@@ -235,6 +235,7 @@ def _major_code(major_id: str) -> str:
 def export_plan_official_excel(plan_id: str) -> bytes:
     """按官方样表模板填入方案 slots → xlsx bytes（布局/合并/样式全保留）。"""
     import openpyxl
+    from openpyxl.styles import Alignment, Font
     from pathlib import Path
 
     plan = get_plan(plan_id)
@@ -279,6 +280,12 @@ def export_plan_official_excel(plan_id: str) -> bytes:
         for j, m in enumerate(majors[:6]):
             ws.cell(r, 9 + j).value = _major_code(m.get("major_id"))  # I-N 专业1-6
         ws.cell(r, 15).value = "服从" if slot.get("adjustable", True) else "不服从"  # O
+        # 行高按校名长度动态加高 + 院校名称缩小字号：窄列内自动折行显示完整校名（PDF/Excel 同生效）
+        name_len = len(str(slot.get("college_name") or ""))
+        rows_for_name = max(1, (name_len + 3) // 4)  # G 列宽 ~4字/行（8pt）
+        ws.row_dimensions[r].height = 15 + rows_for_name * 14
+        ws.cell(r, 7).font = Font(name="Noto Sans CJK SC", size=8)
+        ws.cell(r, 7).alignment = Alignment(wrap_text=True, vertical="center")
 
     buf = io.BytesIO()
     wb.save(buf)
