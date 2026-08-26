@@ -7,6 +7,11 @@ from deeptutor.tools.custom.exam_tools import (
     StudyDashboardTool,
     UploadExamTool,
 )
+from deeptutor.tools.custom.study_tools import (
+    AnalyzeStudyTool,
+    LearnerProfileTool,
+    MistakeNotebookTool,
+)
 from deeptutor.tools.custom.volunteer_tools import (
     CollegeSearchTool,
     VolunteerRecommendTool,
@@ -18,6 +23,9 @@ CUSTOM_TOOL_TYPES: tuple[type[BaseTool], ...] = (
     UploadExamTool,
     StudyDashboardTool,
     GapAnalysisTool,
+    AnalyzeStudyTool,
+    MistakeNotebookTool,
+    LearnerProfileTool,
     CollegeSearchTool,
     VolunteerScoreTool,
     VolunteerRecommendTool,

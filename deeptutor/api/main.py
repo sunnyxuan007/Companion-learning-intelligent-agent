@@ -329,6 +329,7 @@ from deeptutor.api.routers import (
     sessions,
     settings,
     skills,
+    study,
     subagents,
     system,
     unified_ws,
@@ -454,6 +455,12 @@ app.include_router(
     volunteer_chat.router,
     prefix="/api/v1",
     tags=["volunteer-chat"],
+    dependencies=_auth,
+)
+app.include_router(
+    study.router,
+    prefix="/api/v1",
+    tags=["study"],
     dependencies=_auth,
 )
 

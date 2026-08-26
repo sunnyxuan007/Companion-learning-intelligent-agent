@@ -444,6 +444,47 @@ def init_db() -> None:
             conn.execute("ALTER TABLE college_major_name ADD COLUMN program_type TEXT DEFAULT 'normal'")
     except Exception:
         pass
+    # ── 辅助学习模块：错题本 / 复习记录 / 学习者画像 ──────────────
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS mistakes (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'mistake',
+            subject TEXT NOT NULL DEFAULT '',
+            source_text TEXT NOT NULL DEFAULT '',
+            question TEXT DEFAULT '',
+            ai_answer TEXT DEFAULT '',
+            ai_explanation TEXT DEFAULT '',
+            knowledge_points TEXT DEFAULT '[]',
+            mistake_reason TEXT DEFAULT '',
+            difficulty TEXT DEFAULT 'medium',
+            is_mistake INTEGER DEFAULT 1,
+            mastery REAL DEFAULT 0.3,
+            review_count INTEGER DEFAULT 0,
+            last_reviewed_at REAL DEFAULT NULL,
+            status TEXT DEFAULT 'open',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mistakes_user ON mistakes(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mistakes_subject ON mistakes(user_id, subject);
+
+        CREATE TABLE IF NOT EXISTS mistake_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mistake_id TEXT NOT NULL REFERENCES mistakes(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            performance INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_reviews_mistake ON mistake_reviews(mistake_id);
+
+        CREATE TABLE IF NOT EXISTS learner_profiles (
+            user_id TEXT PRIMARY KEY,
+            profile_json TEXT NOT NULL DEFAULT '{}',
+            confidence REAL DEFAULT 0,
+            updated_at REAL NOT NULL
+        );
+    """)
     conn.commit()
     conn.close()
     from deeptutor.services.custom.medical_dao import seed_default_restrictions

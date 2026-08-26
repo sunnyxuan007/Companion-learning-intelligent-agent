@@ -23,6 +23,7 @@ import {
   LayoutGrid,
   Library,
   Lock,
+  NotebookPen,
   PanelLeftClose,
   PanelLeftOpen,
   PenLine,
@@ -101,6 +102,12 @@ const PRIMARY_NAV: NavEntry[] = [
     href: "/study-lab",
     label: "学习分析",
     icon: FlaskConical,
+    requires: "llm",
+  },
+  {
+    href: "/mistake-book",
+    label: "错题本",
+    icon: NotebookPen,
     requires: "llm",
   },
 ];

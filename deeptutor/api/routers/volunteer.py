@@ -160,6 +160,17 @@ async def recommend(body: RecommendRequest):
     if body.user_id:
         profile_dict["user_id"] = body.user_id
 
+    # 学习画像注入：错题本 + 成绩 → 学科掌握度，驱动 _calc_academic_fit
+    # （辅助学习 ↔ 升学推荐 的有机结合点：Web 端直连 API 也能吃到学习画像）
+    try:
+        from deeptutor.services.custom.learner_profile_service import build_academic_fit_inputs
+
+        academic = build_academic_fit_inputs(body.user_id)
+        profile_dict["_subjects"] = academic["_subjects"]
+        profile_dict["_learner_profile"] = academic["_learner_profile"]
+    except Exception:
+        pass
+
     # Get college_ids that have admission records for the user's province + exam_category
     if profile.exam_category and profile.province:
         conn = get_connection()
@@ -226,6 +237,7 @@ class BrowseRequest(BaseModel):
     admission_province: str = "广东"
     year: int = 2026
     exam_category: str = "物理"
+    user_id: str = "default"
     user_rank: int | None = None
     score: int | None = None
     bonus_points: int = 0
@@ -291,6 +303,15 @@ async def browse_recommendations(body: BrowseRequest):
         "year": body.year,
         "medical_restrictions": body.medical_restrictions or [],
     }
+    # 学习画像注入（学习 → 升学闭环，与 recommend 端点一致）
+    try:
+        from deeptutor.services.custom.learner_profile_service import build_academic_fit_inputs
+
+        academic = build_academic_fit_inputs(body.user_id)
+        profile["_subjects"] = academic["_subjects"]
+        profile["_learner_profile"] = academic["_learner_profile"]
+    except Exception:
+        pass
     is_art = is_art_sports(body.exam_category)
     art_direction = body.art_direction
     if is_art:

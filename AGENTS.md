@@ -2164,12 +2164,96 @@ arXiv 检索 "gaokao/college admission + ML" 结果几乎全是 LLM 评测基准
 - [ ] 创新2 投档模拟是否纳入本轮
 - [ ] Ye "Choice"（AGENTS 引用 +24.4pp）引用前需再核
 
+### Phase 25 🚀 辅助学习 ↔ 升学 有机结合：错题本 + AI 分析 + 学习者画像（已实施）
+
+> 状态：已完成 ✅（独立验证 22 项全过）。把「辅助学习」与「升学推荐」通过**学习者画像**闭环打通：
+> 用户上传错题/试卷/作业 → AI 分析（答案/解析/知识点/错因）→ 整理进错题本 →
+> 画像引擎实时计算学科掌握度/薄弱点/专业倾向 → 注入升学推荐引擎（学业匹配度）。
+
+#### 核心设计：画像枢纽
+
+```
+错题/试卷/作业上传 → AI 分析(答案+知识点+错因) → 错题本(mistakes)
+        ↓                                        ↓
+   study_records(打通既有画像)             知识点掌握度
+        ↓                                        ↓
+   ← 学习者画像引擎 learner_profile_service (学科掌握度/薄弱点/专业倾向) →
+        ↓ 注入 _subjects + _learner_profile（与 loop.py 注入结构一致）
+   升学推荐 _calc_academic_fit / 专业倾向推荐 / 权重调优 / L3 记忆写回
+```
+
+**关键决策**：
+- `build_academic_fit_inputs()` 输出的 `_subjects` / `_learner_profile` 与
+  `capabilities/volunteer/loop.py` 注入字段结构完全一致 → **`_calc_academic_fit` 零改动**即可消费
+- 确定性画像计算（成绩正确率 − 未掌握错题惩罚 + 已掌握加成），可解释、不依赖 LLM
+- AI 分析 LLM 失败 → 原文兜底 + `pending` 状态，不丢用户内容
+- 错题复习「做对累积 mastery、做错回落」，连续 3 次做对自动标 mastered
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `deeptutor/services/custom/mistake_dao.py` | 错题本数据层：CRUD / 复习打卡 / 掌握度 / 统计 |
+| `deeptutor/services/custom/learner_profile_service.py` | 画像引擎：`compute_learner_profile` / `build_academic_fit_inputs` / `recommend_majors_by_profile` / `apply_profile_to_volunteer` |
+| `deeptutor/services/custom/ai_tutor_service.py` | AI 分析：LLM 结构化输出 → 错题本 + study_records + 画像刷新（含降级） |
+| `deeptutor/api/routers/study.py` | 学习侧 REST API（analyze / upload / mistakes CRUD / review / profile / apply） |
+| `deeptutor/tools/custom/study_tools.py` | LLM 工具：`analyze_study` / `mistake_notebook` / `learner_profile` |
+| `deeptutor/capabilities/study/` | `StudyLoopCapability`（study_mode 激活）+ 中英提示词 |
+| `web/app/(workspace)/mistake-book/page.tsx` | 错题本前端页面（上传分析/画像/错题列表/复习） |
+| `tests/services/custom/test_mistake_dao.py` | 错题本 DAO 测试 |
+| `tests/services/custom/test_learner_profile_service.py` | 画像引擎测试 |
+| `tests/services/custom/test_ai_tutor_service.py` | AI 分析测试（mock complete） |
+| `scripts/verify_study_integration.py` | 独立端到端验证脚本（无 pytest 依赖，22 项断言） |
+
+#### 修改文件
+
+| 文件 | 修改内容 |
+|------|---------|
+| `deeptutor/services/custom/db.py` | 新增 `mistakes` / `mistake_reviews` / `learner_profiles` 三表（幂等） |
+| `deeptutor/api/main.py` | 注册 `study` 路由（`/api/v1/study/*`） |
+| `deeptutor/api/routers/volunteer.py` | **有机结合点**：browse/recommend 构建 profile 时注入 `_subjects` + `_learner_profile`（Web 直连 API 也吃到学习画像）；BrowseRequest 加 `user_id` |
+| `deeptutor/tools/custom/__init__.py` | 注册 3 个学习工具（CUSTOM_TOOL_TYPES +3） |
+| `deeptutor/capabilities/registry.py` | 注册 `StudyLoopCapability` |
+| `web/components/sidebar/SidebarShell.tsx` | 侧边栏新增「错题本」导航 |
+
+#### REST API（`/api/v1`）
+
+```
+POST  /study/analyze                        — 上传文本，AI 分析并入库错题本
+POST  /study/upload                        — 上传 .txt/.md 文件分析（图片/PDF OCR 待支持）
+GET   /study/mistakes                      — 错题列表（subject/status/source_type 筛选）
+POST  /study/mistakes                      — 手动保存错题
+GET   /study/mistakes/stats                — 错题统计（注意注册在 {id} 之前）
+GET   /study/mistakes/{id}                 — 详情
+PUT   /study/mistakes/{id}                 — 更新（订正/知识点/状态）
+DELETE /study/mistakes/{id}                — 删除
+POST  /study/mistakes/{id}/review          — 复习打卡（对/错 → 掌握度）
+GET   /study/profile                       — 学习者画像（学科掌握度/薄弱点/专业倾向）
+GET   /study/profile/majors                — 画像 → 适合专业
+GET   /study/profile/academic-inputs       — 画像注入升学推荐的实际参数（预览）
+POST  /study/profile/apply                 — 画像应用到升学（user_settings + L3 写回）
+```
+
+#### 验证
+
+- `scripts/verify_study_integration.py`：22 项断言全过（错题 CRUD/复习/统计、画像计算、
+  错题惩罚衰减、专业倾向排序、升学注入结构、AI 分析 mock 成功路径、LLM 降级路径）
+- 全部新增/修改 Python 文件 `py_compile` 通过
+- 前端 `tsc --noEmit` 待部署环境验证（本机无 node_modules）
+
+#### 已知限制 / 后续
+
+- 图片/PDF 错题需 OCR（本机无 tesseract chi_sim，同 Phase 20 方向 D 结论）
+- `analysis_status=pending` 的错题可人工补充答案后 PUT 更新
+- 画像置信度随数据量增长（records+mistakes）/30 封顶 1.0
+
 ## 使用方式
 
 ```bash
 # 在 chat 中通过意图自动激活，或手动指定：
 deeptutor run chat "推荐广东省的985理工院校" --config volunteer_mode=true
 deeptutor run chat "分析我的数学薄弱点" --config career_mode=true
+deeptutor run chat "帮我分析这道错题：…" --config study_mode=true
 ```
 
 ## License 声明

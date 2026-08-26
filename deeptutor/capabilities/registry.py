@@ -13,6 +13,7 @@ from deeptutor.capabilities.mastery import MasteryLoopCapability
 from deeptutor.capabilities.obsidian import ObsidianCapability
 from deeptutor.capabilities.protocol import LoopCapability
 from deeptutor.capabilities.solve import SolveLoopCapability
+from deeptutor.capabilities.study import StudyLoopCapability
 from deeptutor.capabilities.subagent import SubagentCapability
 from deeptutor.capabilities.volunteer import VolunteerLoopCapability
 from deeptutor.core.context import UnifiedContext
@@ -25,6 +26,7 @@ LOOP_CAPABILITIES: tuple[LoopCapability, ...] = (
     ExploreContextCapability(),
     VolunteerLoopCapability(),
     CareerLoopCapability(),
+    StudyLoopCapability(),
 )
 
 
