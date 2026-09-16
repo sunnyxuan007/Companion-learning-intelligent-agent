@@ -4,6 +4,26 @@
 
 ---
 
+## 仓库与协作
+
+| 远程 | 地址 | 用途 |
+|------|------|------|
+| `origin` | https://github.com/sunnyxuan007/Companion-learning-intelligent-agent.git | GitHub 主仓库（公开） |
+| `gitee` | https://gitee.com/D6-FX/saagent_mvp.git | Gitee 镜像 / 同学协作 |
+
+**推送**（两远程内容保持一致）：
+
+```bash
+git push origin main          # → GitHub
+git push gitee main:master    # → Gitee（分支名 master）
+```
+
+- token 已嵌入 `.git/config` 的 remote URL，推送无需再输入
+- 本地分支 `main` 同时跟踪两远程；`gitee` 分支名为 `master`
+- `data/`、`*.db`、`*.bak` 已 gitignore，数据库不会入库
+
+---
+
 ## 架构参考
 
 ### 两层插件模型
