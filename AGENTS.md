@@ -2267,6 +2267,69 @@ POST  /study/profile/apply                 — 画像应用到升学（user_sett
 - `analysis_status=pending` 的错题可人工补充答案后 PUT 更新
 - 画像置信度随数据量增长（records+mistakes）/30 封顶 1.0
 
+### Phase 26 🚀 画像分层互补：原生 L3 ↔ 错题本（2026-09-17 已实施）
+
+> 状态：已完成 ✅（289 passed 核心回归 / 2451 passed 全量）。用户提出「错题本画像不应与
+> DeepTutor 原生画像冲突，更应是其补充」——判断成立，且原实现确有结构性冲突，本轮修复。
+
+#### 问题（6 点，均有代码依据）
+
+| # | 冲突 | 说明 |
+|---|------|------|
+| 1 | 口径不一致 | chat 路径 `_subjects` = `get_subject_summary()` 原始正确率；Web 路径 = 错题本掌握度（正确率−惩罚+加成）→ 同一用户同一专业 `academic_fit` 不同 |
+| 2 | 同名覆盖 | 两条路径都写 `_subjects`/`_learner_profile`，无合并逻辑；`_calc_academic_fit` Priority 1 取 `_subjects` → 谁注入谁生效 |
+| 3 | 语义混杂 | `_learner_profile.strengths` 在原生路径是 LLM 归纳文本、在错题本路径是学科名列表，靠子串匹配兼容（脆弱） |
+| 4 | 写回污染 | `apply_profile_to_volunteer()` 用 `write_preference_signal()` 把计算画像摘要写进 L3 `preferences.md`；而原生 LLM 也写该文件，且 `store.py` 明确 preferences **不自动合并** → 堆积混杂 |
+| 5 | 隐藏 bug | `memory_bridge.extract_learner_profile()` 按 section 含「优势/薄弱/目标」或文本以「Strong/Weak」开头解析，但原生 L3 profile 的 section 是 **身份 / 学习风格 / 知识水平**（`memory/prompts/zh.yaml` slots）→ 几乎提取不到 |
+| 6 | 数据源重叠 | 两路径都读 `study_dao.get_subject_summary()`，加工方式却不同 |
+
+> 当前 L3 记忆目录 `data/memory` 为空 → 冲突属结构性，一旦用户开始 chat 即显形。
+
+#### 设计：三层职责（分区合并，键不重叠 → 互补而非覆盖）
+
+| 层 | 来源 | 字段 | 参与评分 |
+|----|------|------|:-------:|
+| **定量** | 错题本 + 成绩（确定性） | `_subjects`、`strengths`、`weaknesses`、`weak/strong_knowledge_points` | ✅ |
+| **定性** | L3 原生（记忆策展员 LLM） | `identity`、`learning_style`、`knowledge_level`、`goals`、`career_interests`、`location_prefs` | ❌ 仅 prompt 展示 |
+| **合成** | `build_academic_fit_inputs()` | 分区合并 → 单一注入 | — |
+
+#### 改动清单
+
+| 文件 | 改动 |
+|------|------|
+| `services/custom/memory_bridge.py` | 重写 `extract_learner_profile()` 对齐原生 section（身份/学习风格/知识水平）+ preferences 关键词识别；新增 `read_l3_profile()`（读 L3 唯一入口，异常安全）；扩展 `format_learner_briefing()` 渲染定性字段；`strengths`/`weaknesses` 恒为 `[]`（定量归错题本） |
+| `services/custom/learner_profile_service.py` | `build_academic_fit_inputs(user_id, l3_profile=None)` 分区合成（定性 L3 + 定量错题本，带 `qualitative_source`/`quantitative_source` 标记，`_subjects` 加 `source`）；`apply_profile_to_volunteer()` **删除 L3 写回块** |
+| `capabilities/volunteer/loop.py` | `pre_loop` 删除手动 `get_subject_summary()` + L3 双读，改调 `build_academic_fit_inputs(context.session_id)` → chat 与 Web **口径统一**；`augment_kwargs` 不变 |
+| `api/routers/volunteer.py` | 无需改（已调 `build_academic_fit_inputs`，自动获得合成结果） |
+| `tests/services/custom/test_memory_bridge.py` | **新建**（13 用例：原生 section 解析 / preferences 关键词 / 空文档 / `read_l3_profile` 异常安全 / briefing 渲染） |
+| `tests/services/custom/test_learner_profile_service.py` | 新结构 + L3 合并用例 + L3 空兜底 + `apply_profile` 不触碰 L3 断言 |
+| `tests/capabilities/test_volunteer_capability.py` | `pre_loop` 合成注入断言 + 异常吞没 |
+
+#### 保留不动（有意为之）
+
+- `volunteer_chat_service.py` L3 写入（用户原话偏好信号）
+- `volunteer_tools.py` L3 写入（显式权重调整）
+- `volunteer_scorer._calc_academic_fit` **零改动**（结构兼容）
+- L3 `knowledge_level` **不参与评分**（保持评分确定性，仅 prompt 展示）
+
+#### 附带修复：DB 迁移
+
+同学 Phase 25 的 `db.py` 加了 `mistakes`/`mistake_reviews`/`learner_profiles` 三表，但**真实库未执行迁移** → `build_academic_fit_inputs` 报 `no such table: mistakes`。已跑 `init_db()` 补齐三表。
+备份：`deeptutor_custom.db.bak_before_profile_merge_20260917_234204`
+
+#### 验证
+
+- 目标测试 34 passed；核心回归 `tests/services/custom tests/tools/custom tests/capabilities` = **289 passed**
+- 全量 `tests deeptutor/learning/tests`（排除 partners/logging 环境问题）= **2451 passed**，9 failed 全为 `ModuleNotFoundError: No module named 'telegram'` + llamaindex RAG 环境问题（已确认失败测试不引用改动模块）
+- 口径一致性：chat（`pre_loop`）与 Web（`build_academic_fit_inputs`）注入的 `_subjects` **完全相同**
+- L3 空库兜底：`read_l3_profile()` 返回空结构，定性字段为空但不报错，定量评分不受影响
+- `apply_profile_to_volunteer()` 后 L3 `preferences.md` 无新增计算画像条目
+
+#### 已知限制
+
+- 定性画像依赖 L3 记忆积累（当前 `data/memory` 为空 → 定性字段为空属正常）
+- 原生 L3 无「学科强弱」section，故定量强弱完全由错题本供；若未来原生记忆产出学科结论，需在合成层显式合并策略（当前不处理）
+
 ## 使用方式
 
 ```bash

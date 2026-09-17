@@ -50,20 +50,16 @@ class VolunteerLoopCapability:
         if not self.is_active(context):
             return None
         try:
-            from deeptutor.services.custom.memory_bridge import (
-                extract_learner_profile,
-                format_learner_briefing,
+            from deeptutor.services.custom.learner_profile_service import (
+                build_academic_fit_inputs,
             )
-            from deeptutor.services.custom.study_dao import get_subject_summary
-            from deeptutor.services.memory.store import get_memory_store
+            from deeptutor.services.custom.memory_bridge import format_learner_briefing
 
-            store = get_memory_store()
-            profile_data = extract_learner_profile(
-                store.read_doc("L3", "profile"),
-                store.read_doc("L3", "preferences"),
-            )
-
-            subjects = get_subject_summary(context.session_id)
+            # 统一入口：定量（错题本确定性计算）+ 定性（L3 原生记忆）分区合成，
+            # 与 Web API（volunteer.py browse/recommend）口径完全一致。
+            academic = build_academic_fit_inputs(context.session_id)
+            subjects = academic["_subjects"]
+            profile_data = dict(academic["_learner_profile"])
             if subjects:
                 profile_data["_subjects"] = subjects
 

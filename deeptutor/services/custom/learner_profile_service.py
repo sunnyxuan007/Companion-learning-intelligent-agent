@@ -117,31 +117,61 @@ def compute_learner_profile(user_id: str) -> dict[str, Any]:
     }
 
 
-def build_academic_fit_inputs(user_id: str) -> dict[str, Any]:
+def build_academic_fit_inputs(
+    user_id: str,
+    l3_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """输出升学推荐引擎可直接消费的注入参数（核心有机结合点）。
 
+    **画像分层互补**（消除「原生 L3 画像」与「错题本画像」的冲突）：
+      - 定量层（错题本 + 成绩，确定性计算）→ `_subjects` + strengths/weaknesses/知识点
+      - 定性层（L3 原生记忆，LLM 归纳）→ identity/learning_style/knowledge_level/goals/偏好
+      - 合成：两组字段**键不重叠**，合并即互补，不互相覆盖
+
     返回结构兼容 `volunteer_scorer._calc_academic_fit` 的优先链：
-      - `_subjects`: [{"subject", "count", "avg_accuracy"}]  ← 学科掌握度
-      - `_learner_profile`: {"strengths", "weaknesses", "weak_knowledge_points", ...}
-    前端 browse / recommend 与 chat agent 循环共用此函数，画像口径一致。
+      - `_subjects`: [{"subject", "count", "avg_accuracy", "source"}]  ← 学科掌握度（定量）
+      - `_learner_profile`: 定性 + 定量合并后的 dict
+
+    前端 browse / recommend 与 chat agent 循环**共用此函数**，画像口径一致。
+
+    Args:
+        user_id: 用户 id
+        l3_profile: 可选，预读的 L3 定性画像（避免重复读盘）；为 None 时内部读取。
     """
     profile = compute_learner_profile(user_id)
+
+    if l3_profile is None:
+        from deeptutor.services.custom.memory_bridge import read_l3_profile
+
+        l3_profile = read_l3_profile()
+
     subjects = [
         {
             "subject": name,
             "count": m["sample_count"],
             "avg_accuracy": m["accuracy"],
+            "source": m.get("source", "study_records"),
         }
         for name, m in profile["subject_mastery"].items()
     ]
+
     learner_profile = {
+        # ── 定性层（L3 原生记忆）──
+        "identity": l3_profile.get("identity", []),
+        "learning_style": l3_profile.get("learning_style", []),
+        "knowledge_level": l3_profile.get("knowledge_level", []),
+        "goals": l3_profile.get("goals", []),
+        "career_interests": l3_profile.get("career_interests", []),
+        "location_prefs": l3_profile.get("location_prefs", []),
+        "other_preferences": l3_profile.get("other_preferences", []),
+        "other_profile": l3_profile.get("other_profile", []),
+        "qualitative_source": "l3",
+        # ── 定量层（错题本 + 成绩，确定性计算）──
         "strengths": profile["strengths"],
         "weaknesses": profile["weaknesses"],
-        "goals": [],
-        "career_interests": [],
-        "location_prefs": [],
         "weak_knowledge_points": profile["weak_knowledge_points"],
         "strong_knowledge_points": profile["strong_knowledge_points"],
+        "quantitative_source": "mistakes",
     }
     return {"_subjects": subjects, "_learner_profile": learner_profile}
 
@@ -182,12 +212,16 @@ def load_profile(user_id: str) -> dict[str, Any] | None:
 
 
 async def apply_profile_to_volunteer(user_id: str) -> dict[str, Any]:
-    """把学习画像「应用到升学」：写 user_settings 供升学侧读取 + 写回 L3 偏好。
+    """把学习画像「应用到升学」：持久化 + 写 user_settings 供升学侧读取。
 
-    这是双向融合的写方向（学习 → 升学）：
+    写方向（学习 → 升学）：
       1. 持久化画像缓存（learner_profiles 表）
       2. 写入 user_settings（volunteer 读取的 profile 快照）
-      3. 写回 L3 preferences（memory_bridge），供 chat 侧记忆消费
+
+    注意：**不写回 L3 preferences**。错题本画像是确定性计算产物，
+    而 L3 preferences 是原生记忆策展员/用户原话的领地；写回会污染原生记忆
+    （且 preferences.md 不做自动合并，会持续堆积）。定性画像由 L3 单向供给，
+    定量画像由本模块单向供给，两者在 `build_academic_fit_inputs()` 中合并。
     """
     profile = save_profile(user_id)
 
@@ -215,17 +249,6 @@ async def apply_profile_to_volunteer(user_id: str) -> dict[str, Any]:
     )
     conn.commit()
     conn.close()
-
-    # 写回 L3 记忆（异常安全，失败不阻断主流程）
-    try:
-        from deeptutor.services.custom.memory_bridge import write_preference_signal
-
-        await write_preference_signal(
-            text=f"学习画像同步: {profile['profile_summary']}",
-            trace_id=f"learner_profile:{user_id}:{int(now)}",
-        )
-    except Exception:
-        pass
 
     return profile
 

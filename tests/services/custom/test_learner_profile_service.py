@@ -60,13 +60,53 @@ class TestLearnerProfile:
 
     def test_build_academic_fit_inputs_shape(self):
         """升学注入结构必须与 _calc_academic_fit 消费的字段一致。"""
-        inputs = build_academic_fit_inputs("user1")
+        inputs = build_academic_fit_inputs("user1", l3_profile={})
         assert set(inputs.keys()) == {"_subjects", "_learner_profile"}
         subjects = inputs["_subjects"]
-        assert all({"subject", "count", "avg_accuracy"} <= set(s) for s in subjects)
+        assert all({"subject", "count", "avg_accuracy", "source"} <= set(s) for s in subjects)
         lp = inputs["_learner_profile"]
         assert "strengths" in lp and "weaknesses" in lp
         assert isinstance(lp["strengths"], list) and isinstance(lp["weaknesses"], list)
+        # 定量层来源标记（错题本）
+        assert lp["quantitative_source"] == "mistakes"
+        assert lp["qualitative_source"] == "l3"
+
+    def test_l3_qualitative_merges_with_mistake_quantitative(self):
+        """分层互补：L3 供定性、错题本供定量，两组字段合并互不覆盖。"""
+        l3 = {
+            "identity": ["高三理科生"],
+            "learning_style": ["偏好图示"],
+            "knowledge_level": ["导数掌握较好"],
+            "goals": ["冲刺 985"],
+            "career_interests": ["计算机"],
+            "location_prefs": ["南方城市"],
+            "other_preferences": [],
+            "other_profile": [],
+            "strengths": [],
+            "weaknesses": [],
+        }
+        inputs = build_academic_fit_inputs("user1", l3_profile=l3)
+        lp = inputs["_learner_profile"]
+        # 定性来自 L3
+        assert lp["identity"] == ["高三理科生"]
+        assert lp["career_interests"] == ["计算机"]
+        assert lp["location_prefs"] == ["南方城市"]
+        assert lp["goals"] == ["冲刺 985"]
+        # 定量来自错题本（用户1 数学 0.815、英语 0.92 → 英语强）
+        assert "英语" in lp["strengths"]
+        assert isinstance(lp["weaknesses"], list)
+        # 定量口径与 _subjects 一致
+        acc = {s["subject"]: s["avg_accuracy"] for s in inputs["_subjects"]}
+        assert lp["strengths"] == [k for k, v in acc.items() if v >= 0.75]
+
+    def test_l3_empty_qualitative_but_quantitative_intact(self):
+        """L3 为空时定性字段为空，但定量评分不受影响（不报错）。"""
+        inputs = build_academic_fit_inputs("user1", l3_profile={})
+        lp = inputs["_learner_profile"]
+        assert lp["identity"] == []
+        assert lp["career_interests"] == []
+        assert lp["strengths"]  # 定量仍在
+        assert inputs["_subjects"]
 
     def test_save_and_load_profile(self):
         saved = save_profile("user1")
@@ -79,6 +119,26 @@ class TestLearnerProfile:
         profile = compute_learner_profile("ghost_user")
         assert profile["subject_mastery"] == {}
         assert profile["confidence"] == 0.0
-        inputs = build_academic_fit_inputs("ghost_user")
+        inputs = build_academic_fit_inputs("ghost_user", l3_profile={})
         assert inputs["_subjects"] == []
         assert inputs["_learner_profile"]["strengths"] == []
+
+    async def test_apply_profile_does_not_write_l3(self, monkeypatch):
+        """确定性画像不得写回 L3 preferences（避免污染原生记忆）。"""
+        import deeptutor.services.custom.memory_bridge as mb
+
+        calls: list[str] = []
+
+        def _spy_store():
+            calls.append("get_memory_store")
+            raise AssertionError("apply_profile_to_volunteer 不应触碰 L3")
+
+        monkeypatch.setattr(mb, "get_memory_store", _spy_store)
+
+        from deeptutor.services.custom.learner_profile_service import (
+            apply_profile_to_volunteer,
+        )
+
+        profile = await apply_profile_to_volunteer("user1")
+        assert profile["user_id"] == "user1"
+        assert calls == [], "apply_profile_to_volunteer 不应读/写 L3"
